@@ -1,0 +1,8 @@
+2026-11-04 16:14:49 | INFO    | comisiones | === Inicio pipeline comisiones | entorno=dev | modo=local ===
+2026-11-04 16:14:49 | INFO    | comisiones.extract | Empleados leídos de archivo tests/fixtures/empleados_fixture.csv: 38 filas
+2026-11-04 16:14:49 | INFO    | comisiones.extract | CSV de comisiones leído: 34 filas, columnas=['empleado_id', 'Nombre y Apellido', 'Comisión']
+2026-11-04 16:14:49 | INFO    | comisiones.transform | Join completado: {'filas_empleados': 38, 'filas_comisiones': 34, 'filas_salida': 38, 'empleados_con_comision': 34, 'empleados_sin_comision': [6, 7, 8, 38], 'comisiones_sin_empleado': [], 'comisiones_sobre_tope': [18], 'total_salario': 218500.0, 'total_comision': 354000.0, 'total_salario_total': 572500.0}
+2026-11-04 16:14:49 | WARNING | comisiones.load | pyarrow no está instalado: se omite la salida Parquet local
+2026-11-04 16:14:49 | INFO    | comisiones.load | Archivo generado: output/salario_total_202610.xlsx
+2026-11-04 16:14:49 | INFO    | comisiones.load | Archivo generado: output/salario_total_202610.csv
+2026-11-04 16:14:49 | INFO    | comisiones | === Fin pipeline: {"estado": "Succeeded", "entorno": "dev", "modo": "local", "periodo": "202610", "salidas": ["output/salario_total_202610.xlsx", "output/salario_total_202610.csv"], "calidad": {"filas_empleados": 38, "filas_comisiones": 34, "filas_salida": 38, "empleados_con_comision": 34, "empleados_sin_comision": [6, 7, 8, 38], "comisiones_sin_empleado": [], "comisiones_sobre_tope": [18], "total_salario": 218500.0, "total_comision": 354000.0, "total_salario_total": 572500.0}, "duracion_seg": 0.054} ===
