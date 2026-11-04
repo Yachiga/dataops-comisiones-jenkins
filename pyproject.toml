@@ -1,0 +1,13 @@
+[project]
+name = "comisiones"
+version = "1.0.0"
+description = "Pipeline DataOps: salario total = salario + comisión (PostgreSQL + CSV en Blob -> Parquet en ADLS)"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-v"

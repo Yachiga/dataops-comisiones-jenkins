@@ -1,0 +1,8 @@
+pandas>=2.2
+pyarrow>=15.0
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9
+azure-identity>=1.16
+azure-storage-blob>=12.19
+azure-storage-file-datalake>=12.14
+openpyxl>=3.1
