@@ -1,0 +1,22 @@
+*   2521fe8 (HEAD -> main, tag: v1.0.0) Release v1.0.0: merge develop into main
+|\  
+| * 65e2aeb (develop) docs: README con arquitectura, estructura y pasos de despliegue
+| *   c2c357e Merge branch 'feature/cicd' into develop
+| |\  
+| | * 6c1b547 test(ci): validación de artefactos ADF, ARM, YAML y escaneo de secretos
+| | * 3c28dc6 ci: pipeline CI y CD multi-entorno dev/test/prod en Azure DevOps
+| |/  
+| *   27f0170 Merge branch 'feature/infra-arm' into develop
+| |\  
+| | * f7ae150 feat(infra): plantilla ARM de ADLS Gen2, Key Vault y Data Factory con parámetros dev/test/prod
+| |/  
+| *   57d74cb Merge branch 'feature/adf-pipeline' into develop
+| |\  
+| | * adbbbd1 feat(adf): linked services, datasets, data flow de join y pipeline pl_comisiones_salario_total
+| |/  
+| * 3db34d5 Merge branch 'feature/pipeline-python' into develop
+|/| 
+| * 75a4956 test(python): pruebas de reglas de calidad, join y flujo completo
+| * 9208c4a feat(python): extracción PostgreSQL/Blob, join por empleado_id y salida Parquet
+|/  
+* 2b9d539 chore: estructura inicial del proyecto y dependencias
