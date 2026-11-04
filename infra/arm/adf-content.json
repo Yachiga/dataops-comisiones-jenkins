@@ -1,0 +1,667 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Contenido de Data Factory (generado por scripts/build_adf_arm.py; no editar a mano)"
+  },
+  "parameters": {
+    "factoryName": {
+      "type": "string",
+      "metadata": {
+        "description": "Nombre del Data Factory destino"
+      }
+    },
+    "entorno": {
+      "type": "string",
+      "allowedValues": [
+        "dev",
+        "test",
+        "prod"
+      ]
+    },
+    "keyVaultUri": {
+      "type": "string"
+    },
+    "blobEndpoint": {
+      "type": "string"
+    },
+    "dfsEndpoint": {
+      "type": "string"
+    },
+    "storageAccountId": {
+      "type": "string"
+    },
+    "pgServer": {
+      "type": "string",
+      "defaultValue": "mgg.vps.webdock.cloud"
+    },
+    "pgDatabase": {
+      "type": "string",
+      "defaultValue": "dmc"
+    },
+    "pgUser": {
+      "type": "string",
+      "defaultValue": "usr_ro_dmc_rrhh_estudiantes"
+    }
+  },
+  "resources": [
+    {
+      "name": "[concat(parameters('factoryName'), '/ls_adls_datalake')]",
+      "type": "Microsoft.DataFactory/factories/linkedservices",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "type": "AzureBlobFS",
+        "description": "Azure Data Lake Storage Gen2 (staging y curated). Autenticación con Managed Identity del Data Factory.",
+        "annotations": [
+          "dataops-comisiones"
+        ],
+        "typeProperties": {
+          "url": "[parameters('dfsEndpoint')]"
+        }
+      },
+      "dependsOn": []
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/ls_blob_raw')]",
+      "type": "Microsoft.DataFactory/factories/linkedservices",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "type": "AzureBlobStorage",
+        "description": "Blob Storage donde se deposita el CSV de comisiones (contenedor raw). Autenticación con Managed Identity del Data Factory.",
+        "annotations": [
+          "dataops-comisiones"
+        ],
+        "typeProperties": {
+          "serviceEndpoint": "[parameters('blobEndpoint')]",
+          "accountKind": "StorageV2"
+        }
+      },
+      "dependsOn": []
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/ls_keyvault')]",
+      "type": "Microsoft.DataFactory/factories/linkedservices",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "type": "AzureKeyVault",
+        "annotations": [
+          "dataops-comisiones"
+        ],
+        "typeProperties": {
+          "baseUrl": "[parameters('keyVaultUri')]"
+        }
+      },
+      "dependsOn": []
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/ls_postgres_dmc')]",
+      "type": "Microsoft.DataFactory/factories/linkedservices",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "type": "PostgreSqlV2",
+        "description": "Base PostgreSQL dmc (schema rrhh). Usuario de solo lectura; la contraseña vive en Key Vault.",
+        "annotations": [
+          "dataops-comisiones"
+        ],
+        "typeProperties": {
+          "server": "[parameters('pgServer')]",
+          "port": 5432,
+          "database": "[parameters('pgDatabase')]",
+          "username": "[parameters('pgUser')]",
+          "sslMode": 2,
+          "authenticationType": "Basic",
+          "password": {
+            "type": "AzureKeyVaultSecret",
+            "store": {
+              "referenceName": "ls_keyvault",
+              "type": "LinkedServiceReference"
+            },
+            "secretName": "pg-dmc-password"
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls_keyvault')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/ds_csv_comisiones')]",
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "ls_blob_raw",
+          "type": "LinkedServiceReference"
+        },
+        "parameters": {
+          "fileName": {
+            "type": "string",
+            "defaultValue": "ComisionEmpleados_V1_202610.csv"
+          }
+        },
+        "annotations": [
+          "dataops-comisiones"
+        ],
+        "type": "DelimitedText",
+        "typeProperties": {
+          "location": {
+            "type": "AzureBlobStorageLocation",
+            "container": "raw",
+            "folderPath": "comisiones",
+            "fileName": {
+              "value": "@dataset().fileName",
+              "type": "Expression"
+            }
+          },
+          "columnDelimiter": ";",
+          "rowDelimiter": "",
+          "encodingName": "UTF-8",
+          "escapeChar": "\\",
+          "quoteChar": "\"",
+          "firstRowAsHeader": true
+        },
+        "schema": [
+          {
+            "name": "empleado_id",
+            "type": "String"
+          },
+          {
+            "name": "Nombre y Apellido",
+            "type": "String"
+          },
+          {
+            "name": "Comisión",
+            "type": "String"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls_blob_raw')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/ds_parquet_curated_salario_total')]",
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "ls_adls_datalake",
+          "type": "LinkedServiceReference"
+        },
+        "parameters": {
+          "periodo": {
+            "type": "string"
+          }
+        },
+        "annotations": [
+          "dataops-comisiones"
+        ],
+        "type": "Parquet",
+        "typeProperties": {
+          "location": {
+            "type": "AzureBlobFSLocation",
+            "fileSystem": "curated",
+            "folderPath": {
+              "value": "@concat('comisiones/salario_total/periodo=', dataset().periodo)",
+              "type": "Expression"
+            }
+          },
+          "compressionCodec": "snappy"
+        },
+        "schema": []
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls_adls_datalake')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/ds_parquet_staging_empleado')]",
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "ls_adls_datalake",
+          "type": "LinkedServiceReference"
+        },
+        "parameters": {
+          "periodo": {
+            "type": "string"
+          }
+        },
+        "annotations": [
+          "dataops-comisiones"
+        ],
+        "type": "Parquet",
+        "typeProperties": {
+          "location": {
+            "type": "AzureBlobFSLocation",
+            "fileSystem": "staging",
+            "folderPath": {
+              "value": "@concat('rrhh/empleado/periodo=', dataset().periodo)",
+              "type": "Expression"
+            },
+            "fileName": "empleado.parquet"
+          },
+          "compressionCodec": "snappy"
+        },
+        "schema": []
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls_adls_datalake')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/ds_pg_empleado')]",
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "ls_postgres_dmc",
+          "type": "LinkedServiceReference"
+        },
+        "annotations": [
+          "dataops-comisiones"
+        ],
+        "type": "PostgreSqlV2Table",
+        "schema": [],
+        "typeProperties": {
+          "schema": "rrhh",
+          "table": "empleado"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls_postgres_dmc')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/df_join_salario_total')]",
+      "type": "Microsoft.DataFactory/factories/dataflows",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "type": "MappingDataFlow",
+        "description": "Join empleado (PostgreSQL vía staging Parquet) con comisiones (CSV en Blob) por empleado_id; salario_total = mnt_salario + mnt_comision.",
+        "annotations": [
+          "dataops-comisiones"
+        ],
+        "typeProperties": {
+          "sources": [
+            {
+              "dataset": {
+                "referenceName": "ds_parquet_staging_empleado",
+                "type": "DatasetReference"
+              },
+              "name": "srcEmpleado",
+              "description": "Empleados extraídos de rrhh.empleado"
+            },
+            {
+              "dataset": {
+                "referenceName": "ds_csv_comisiones",
+                "type": "DatasetReference"
+              },
+              "name": "srcComisiones",
+              "description": "ComisionEmpleados_V1_AAAAMM.csv"
+            }
+          ],
+          "sinks": [
+            {
+              "dataset": {
+                "referenceName": "ds_parquet_curated_salario_total",
+                "type": "DatasetReference"
+              },
+              "name": "sinkSalarioTotal",
+              "description": "Consolidado en Data Lake (Parquet)"
+            }
+          ],
+          "transformations": [
+            {
+              "name": "drvTiposComision"
+            },
+            {
+              "name": "fltComisionValida"
+            },
+            {
+              "name": "selComision"
+            },
+            {
+              "name": "joinEmpleadoComision"
+            },
+            {
+              "name": "drvComisionNula"
+            },
+            {
+              "name": "drvSalarioTotal"
+            },
+            {
+              "name": "selSalida"
+            },
+            {
+              "name": "ordEmpleado"
+            }
+          ],
+          "scriptLines": [
+            "parameters{",
+            "     periodo as string ('202610'),",
+            "     entorno as string ('dev')",
+            "}",
+            "source(output(",
+            "          empleado_id as integer,",
+            "          tip_documento as string,",
+            "          num_documento as string,",
+            "          nom_empleado as string,",
+            "          ape_empleado as string,",
+            "          cod_cargo as string,",
+            "          cod_departamento as string,",
+            "          mnt_salario as decimal(12,2),",
+            "          mnt_tope_comision as decimal(12,2)",
+            "     ),",
+            "     allowSchemaDrift: true,",
+            "     validateSchema: false,",
+            "     ignoreNoFilesFound: false,",
+            "     format: 'parquet') ~> srcEmpleado",
+            "source(output(",
+            "          empleado_id as string,",
+            "          {Nombre y Apellido} as string,",
+            "          {Comisión} as string",
+            "     ),",
+            "     allowSchemaDrift: true,",
+            "     validateSchema: false,",
+            "     ignoreNoFilesFound: false) ~> srcComisiones",
+            "srcComisiones derive(com_empleado_id = toInteger(trim(empleado_id)),",
+            "          mnt_comision = toDecimal(trim({Comisión}), 12, 2),",
+            "          nombre_apellido_csv = trim(replace({Nombre y Apellido}, ',', ''))) ~> drvTiposComision",
+            "drvTiposComision filter(!isNull(com_empleado_id) && !isNull(mnt_comision) && mnt_comision >= toDecimal(0, 12, 2)) ~> fltComisionValida",
+            "fltComisionValida select(mapColumn(",
+            "          com_empleado_id,",
+            "          mnt_comision,",
+            "          nombre_apellido_csv",
+            "     ),",
+            "     skipDuplicateMapInputs: true,",
+            "     skipDuplicateMapOutputs: true) ~> selComision",
+            "srcEmpleado, selComision join(empleado_id == com_empleado_id,",
+            "     joinType:'left',",
+            "     matchType:'exact',",
+            "     ignoreSpaces: false,",
+            "     broadcast: 'auto')~> joinEmpleadoComision",
+            "joinEmpleadoComision derive(tiene_comision = !isNull(com_empleado_id),",
+            "          mnt_comision = iifNull(mnt_comision, toDecimal(0, 12, 2)),",
+            "          nombre_completo = concat(trim(nom_empleado), ' ', trim(ape_empleado))) ~> drvComisionNula",
+            "drvComisionNula derive(salario_total = toDecimal(mnt_salario + mnt_comision, 12, 2),",
+            "          supera_tope_comision = !isNull(mnt_tope_comision) && mnt_comision > mnt_tope_comision,",
+            "          periodo = $periodo,",
+            "          entorno = $entorno,",
+            "          fecha_proceso = currentTimestamp()) ~> drvSalarioTotal",
+            "drvSalarioTotal select(mapColumn(",
+            "          empleado_id,",
+            "          tip_documento,",
+            "          num_documento,",
+            "          nombre_completo,",
+            "          nom_empleado,",
+            "          ape_empleado,",
+            "          cod_cargo,",
+            "          cod_departamento,",
+            "          mnt_salario,",
+            "          mnt_comision,",
+            "          salario_total,",
+            "          mnt_tope_comision,",
+            "          tiene_comision,",
+            "          supera_tope_comision,",
+            "          periodo,",
+            "          entorno,",
+            "          fecha_proceso",
+            "     ),",
+            "     skipDuplicateMapInputs: true,",
+            "     skipDuplicateMapOutputs: true) ~> selSalida",
+            "selSalida sort(asc(empleado_id, true)) ~> ordEmpleado",
+            "ordEmpleado sink(allowSchemaDrift: true,",
+            "     validateSchema: false,",
+            "     format: 'parquet',",
+            "     truncate: true,",
+            "     umask: 0022,",
+            "     preCommands: [],",
+            "     postCommands: [],",
+            "     skipDuplicateMapInputs: true,",
+            "     skipDuplicateMapOutputs: true,",
+            "     partitionFileNames:['salario_total.parquet'],",
+            "     partitionBy('hash', 1)) ~> sinkSalarioTotal"
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_csv_comisiones')]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_parquet_curated_salario_total')]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_parquet_staging_empleado')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/pl_comisiones_salario_total')]",
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "description": "Extrae rrhh.empleado (PostgreSQL), procesa el CSV de comisiones desde Blob, hace el Join por empleado_id y escribe salario_total en Parquet (ADLS Gen2).",
+        "annotations": [
+          "dataops-comisiones"
+        ],
+        "folder": {
+          "name": "comisiones"
+        },
+        "parameters": {
+          "csvFileName": {
+            "type": "string",
+            "defaultValue": "ComisionEmpleados_V1_202610.csv"
+          },
+          "periodo": {
+            "type": "string",
+            "defaultValue": "202610"
+          },
+          "entorno": {
+            "type": "string",
+            "defaultValue": "[parameters('entorno')]"
+          }
+        },
+        "activities": [
+          {
+            "name": "Validar_CSV_Comisiones",
+            "description": "Verifica que el CSV exista en raw/comisiones antes de procesar.",
+            "type": "Validation",
+            "typeProperties": {
+              "dataset": {
+                "referenceName": "ds_csv_comisiones",
+                "type": "DatasetReference",
+                "parameters": {
+                  "fileName": {
+                    "value": "@pipeline().parameters.csvFileName",
+                    "type": "Expression"
+                  }
+                }
+              },
+              "timeout": "0.00:10:00",
+              "sleep": 30,
+              "minimumSize": 10
+            }
+          },
+          {
+            "name": "Copiar_Empleados_PostgreSQL",
+            "description": "Copia dmc.rrhh.empleado a staging en formato Parquet.",
+            "type": "Copy",
+            "dependsOn": [],
+            "policy": {
+              "timeout": "0.01:00:00",
+              "retry": 2,
+              "retryIntervalInSeconds": 60,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "typeProperties": {
+              "source": {
+                "type": "PostgreSqlV2Source",
+                "query": "SELECT empleado_id, tip_documento, num_documento, nom_empleado, ape_empleado, cod_cargo::text AS cod_cargo, cod_departamento::text AS cod_departamento, mnt_salario::numeric(12,2) AS mnt_salario, mnt_tope_comision::numeric(12,2) AS mnt_tope_comision FROM rrhh.empleado"
+              },
+              "sink": {
+                "type": "ParquetSink",
+                "storeSettings": {
+                  "type": "AzureBlobFSWriteSettings"
+                },
+                "formatSettings": {
+                  "type": "ParquetWriteSettings"
+                }
+              },
+              "enableStaging": false
+            },
+            "inputs": [
+              {
+                "referenceName": "ds_pg_empleado",
+                "type": "DatasetReference"
+              }
+            ],
+            "outputs": [
+              {
+                "referenceName": "ds_parquet_staging_empleado",
+                "type": "DatasetReference",
+                "parameters": {
+                  "periodo": {
+                    "value": "@pipeline().parameters.periodo",
+                    "type": "Expression"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Join_Calcular_Salario_Total",
+            "type": "ExecuteDataFlow",
+            "dependsOn": [
+              {
+                "activity": "Validar_CSV_Comisiones",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              },
+              {
+                "activity": "Copiar_Empleados_PostgreSQL",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.01:00:00",
+              "retry": 1,
+              "retryIntervalInSeconds": 60
+            },
+            "typeProperties": {
+              "dataflow": {
+                "referenceName": "df_join_salario_total",
+                "type": "DataFlowReference",
+                "parameters": {
+                  "periodo": {
+                    "value": "'@{pipeline().parameters.periodo}'",
+                    "type": "Expression"
+                  },
+                  "entorno": {
+                    "value": "'@{pipeline().parameters.entorno}'",
+                    "type": "Expression"
+                  }
+                },
+                "datasetParameters": {
+                  "srcEmpleado": {
+                    "periodo": {
+                      "value": "@pipeline().parameters.periodo",
+                      "type": "Expression"
+                    }
+                  },
+                  "srcComisiones": {
+                    "fileName": {
+                      "value": "@pipeline().parameters.csvFileName",
+                      "type": "Expression"
+                    }
+                  },
+                  "sinkSalarioTotal": {
+                    "periodo": {
+                      "value": "@pipeline().parameters.periodo",
+                      "type": "Expression"
+                    }
+                  }
+                }
+              },
+              "compute": {
+                "coreCount": 8,
+                "computeType": "General"
+              },
+              "traceLevel": "Fine"
+            }
+          },
+          {
+            "name": "Fallo_Pipeline",
+            "description": "Marca la ejecución como fallida con un mensaje claro si falla la extracción o el Join.",
+            "type": "Fail",
+            "dependsOn": [
+              {
+                "activity": "Join_Calcular_Salario_Total",
+                "dependencyConditions": [
+                  "Failed"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "message": {
+                "value": "@concat('Error en Join/escritura Parquet para periodo ', pipeline().parameters.periodo)",
+                "type": "Expression"
+              },
+              "errorCode": "COMISIONES_500"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/dataflows', parameters('factoryName'), 'df_join_salario_total')]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_csv_comisiones')]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_parquet_staging_empleado')]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', parameters('factoryName'), 'ds_pg_empleado')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/tr_blob_nuevo_csv_comisiones')]",
+      "type": "Microsoft.DataFactory/factories/triggers",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "description": "Ejecuta el pipeline cuando llega un nuevo ComisionEmpleados_V1_*.csv a raw/comisiones.",
+        "annotations": [
+          "dataops-comisiones"
+        ],
+        "runtimeState": "Stopped",
+        "pipelines": [
+          {
+            "pipelineReference": {
+              "referenceName": "pl_comisiones_salario_total",
+              "type": "PipelineReference"
+            },
+            "parameters": {
+              "csvFileName": "@triggerBody().fileName",
+              "periodo": "@substring(triggerBody().fileName, 21, 6)",
+              "entorno": "[parameters('entorno')]"
+            }
+          }
+        ],
+        "type": "BlobEventsTrigger",
+        "typeProperties": {
+          "blobPathBeginsWith": "/raw/blobs/comisiones/ComisionEmpleados_V1_",
+          "blobPathEndsWith": ".csv",
+          "ignoreEmptyBlobs": true,
+          "scope": "[parameters('storageAccountId')]",
+          "events": [
+            "Microsoft.Storage.BlobCreated"
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/pipelines', parameters('factoryName'), 'pl_comisiones_salario_total')]"
+      ]
+    }
+  ],
+  "outputs": {
+    "recursos": {
+      "type": "int",
+      "value": 11
+    }
+  }
+}

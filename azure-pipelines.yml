@@ -1,0 +1,117 @@
+# =============================================================================
+# CI/CD DataOps - Comisiones de empleados
+#   CI      : pruebas unitarias/integración, validación de artefactos ADF y ARM
+#   CD_DEV  : despliegue automático a desarrollo + prueba de humo (pipeline ADF)
+#   CD_TEST : despliegue a pruebas + prueba de humo + validación del Parquet
+#   CD_PROD : despliegue a producción (solo rama main, con checks del environment)
+# =============================================================================
+trigger:
+  branches:
+    include: [main, develop]
+  paths:
+    exclude: [README.md, docs/*]
+
+pr:
+  branches:
+    include: [main, develop]
+
+variables:
+  - group: vg-dataops-comisiones          # PG_PASSWORD (secreta), AZURE_SUBSCRIPTION_ID
+  - name: pythonVersion
+    value: '3.11'
+  - name: azureServiceConnection
+    value: 'sc-dataops-comisiones'        # Service connection ARM (Workload Identity)
+  - name: location
+    value: 'eastus2'
+  - name: csvFileName
+    value: 'ComisionEmpleados_V1_202610.csv'
+  - name: periodo
+    value: '202610'
+
+stages:
+  # ---------------------------------------------------------------------------
+  - stage: CI
+    displayName: 'CI - Validar y probar'
+    jobs:
+      - job: Pruebas_Python
+        displayName: 'Pruebas del flujo (pytest)'
+        pool: { vmImage: 'ubuntu-latest' }
+        steps:
+          - task: UsePythonVersion@0
+            inputs: { versionSpec: '$(pythonVersion)' }
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements-dev.txt
+            displayName: 'Instalar dependencias'
+          - script: ruff check src tests scripts
+            displayName: 'Lint (ruff)'
+          - script: |
+              python -m pytest --junitxml=reports/junit.xml --cov=src/comisiones --cov-report=xml:reports/coverage.xml
+            displayName: 'Ejecutar pruebas'
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs: { testResultsFiles: 'reports/junit.xml', testRunTitle: 'Pruebas comisiones' }
+          - task: PublishCodeCoverageResults@2
+            condition: succeededOrFailed()
+            inputs: { summaryFileLocation: 'reports/coverage.xml' }
+          - script: |
+              python -m comisiones.pipeline --modo local --entorno dev \
+                --empleados-file tests/fixtures/empleados_fixture.csv \
+                --csv data/input/$(csvFileName) --salida output
+            env: { PYTHONPATH: src }
+            displayName: 'Ejecución de prueba del pipeline Python (fixture)'
+          - publish: output
+            artifact: salida-prueba-python
+
+      - job: Validar_ARM_ADF
+        displayName: 'Validar plantillas ARM y artefactos ADF'
+        pool: { vmImage: 'ubuntu-latest' }
+        steps:
+          - task: UsePythonVersion@0
+            inputs: { versionSpec: '$(pythonVersion)' }
+          - script: python scripts/build_adf_arm.py --check
+            displayName: 'Comprobar que adf-content.json está sincronizada con adf/'
+          - task: AzureCLI@2
+            displayName: 'az deployment group validate (dev)'
+            condition: ne(variables['Build.Reason'], 'PullRequest')
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az group create -n rg-dataops-dev -l $(location) -o none
+                az deployment group validate -g rg-dataops-dev \
+                  --template-file infra/arm/infra.json \
+                  --parameters @infra/arm/parameters/infra.dev.parameters.json \
+                  --parameters pgPassword='$(PG_PASSWORD)' -o table
+          - task: CopyFiles@2
+            inputs:
+              Contents: |
+                infra/**
+                adf/**
+                scripts/**
+                data/input/**
+                src/**
+                requirements*.txt
+              TargetFolder: '$(Build.ArtifactStagingDirectory)'
+          - publish: '$(Build.ArtifactStagingDirectory)'
+            artifact: drop
+
+  # ---------------------------------------------------------------------------
+  - template: cicd/templates/deploy-env.yml
+    parameters:
+      entorno: dev
+      dependsOn: CI
+      condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+
+  - template: cicd/templates/deploy-env.yml
+    parameters:
+      entorno: test
+      dependsOn: CD_DEV
+      condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+
+  - template: cicd/templates/deploy-env.yml
+    parameters:
+      entorno: prod
+      dependsOn: CD_TEST
+      condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))

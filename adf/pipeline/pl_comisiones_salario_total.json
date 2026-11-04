@@ -1,0 +1,179 @@
+{
+  "name": "pl_comisiones_salario_total",
+  "properties": {
+    "description": "Extrae rrhh.empleado (PostgreSQL), procesa el CSV de comisiones desde Blob, hace el Join por empleado_id y escribe salario_total en Parquet (ADLS Gen2).",
+    "annotations": [
+      "dataops-comisiones"
+    ],
+    "folder": {
+      "name": "comisiones"
+    },
+    "parameters": {
+      "csvFileName": {
+        "type": "string",
+        "defaultValue": "ComisionEmpleados_V1_202610.csv"
+      },
+      "periodo": {
+        "type": "string",
+        "defaultValue": "202610"
+      },
+      "entorno": {
+        "type": "string",
+        "defaultValue": "dev"
+      }
+    },
+    "activities": [
+      {
+        "name": "Validar_CSV_Comisiones",
+        "description": "Verifica que el CSV exista en raw/comisiones antes de procesar.",
+        "type": "Validation",
+        "typeProperties": {
+          "dataset": {
+            "referenceName": "ds_csv_comisiones",
+            "type": "DatasetReference",
+            "parameters": {
+              "fileName": {
+                "value": "@pipeline().parameters.csvFileName",
+                "type": "Expression"
+              }
+            }
+          },
+          "timeout": "0.00:10:00",
+          "sleep": 30,
+          "minimumSize": 10
+        }
+      },
+      {
+        "name": "Copiar_Empleados_PostgreSQL",
+        "description": "Copia dmc.rrhh.empleado a staging en formato Parquet.",
+        "type": "Copy",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.01:00:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 60,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "typeProperties": {
+          "source": {
+            "type": "PostgreSqlV2Source",
+            "query": "SELECT empleado_id, tip_documento, num_documento, nom_empleado, ape_empleado, cod_cargo::text AS cod_cargo, cod_departamento::text AS cod_departamento, mnt_salario::numeric(12,2) AS mnt_salario, mnt_tope_comision::numeric(12,2) AS mnt_tope_comision FROM rrhh.empleado"
+          },
+          "sink": {
+            "type": "ParquetSink",
+            "storeSettings": {
+              "type": "AzureBlobFSWriteSettings"
+            },
+            "formatSettings": {
+              "type": "ParquetWriteSettings"
+            }
+          },
+          "enableStaging": false
+        },
+        "inputs": [
+          {
+            "referenceName": "ds_pg_empleado",
+            "type": "DatasetReference"
+          }
+        ],
+        "outputs": [
+          {
+            "referenceName": "ds_parquet_staging_empleado",
+            "type": "DatasetReference",
+            "parameters": {
+              "periodo": {
+                "value": "@pipeline().parameters.periodo",
+                "type": "Expression"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Join_Calcular_Salario_Total",
+        "type": "ExecuteDataFlow",
+        "dependsOn": [
+          {
+            "activity": "Validar_CSV_Comisiones",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          },
+          {
+            "activity": "Copiar_Empleados_PostgreSQL",
+            "dependencyConditions": [
+              "Succeeded"
+            ]
+          }
+        ],
+        "policy": {
+          "timeout": "0.01:00:00",
+          "retry": 1,
+          "retryIntervalInSeconds": 60
+        },
+        "typeProperties": {
+          "dataflow": {
+            "referenceName": "df_join_salario_total",
+            "type": "DataFlowReference",
+            "parameters": {
+              "periodo": {
+                "value": "'@{pipeline().parameters.periodo}'",
+                "type": "Expression"
+              },
+              "entorno": {
+                "value": "'@{pipeline().parameters.entorno}'",
+                "type": "Expression"
+              }
+            },
+            "datasetParameters": {
+              "srcEmpleado": {
+                "periodo": {
+                  "value": "@pipeline().parameters.periodo",
+                  "type": "Expression"
+                }
+              },
+              "srcComisiones": {
+                "fileName": {
+                  "value": "@pipeline().parameters.csvFileName",
+                  "type": "Expression"
+                }
+              },
+              "sinkSalarioTotal": {
+                "periodo": {
+                  "value": "@pipeline().parameters.periodo",
+                  "type": "Expression"
+                }
+              }
+            }
+          },
+          "compute": {
+            "coreCount": 8,
+            "computeType": "General"
+          },
+          "traceLevel": "Fine"
+        }
+      },
+      {
+        "name": "Fallo_Pipeline",
+        "description": "Marca la ejecución como fallida con un mensaje claro si falla la extracción o el Join.",
+        "type": "Fail",
+        "dependsOn": [
+          {
+            "activity": "Join_Calcular_Salario_Total",
+            "dependencyConditions": [
+              "Failed"
+            ]
+          }
+        ],
+        "typeProperties": {
+          "message": {
+            "value": "@concat('Error en Join/escritura Parquet para periodo ', pipeline().parameters.periodo)",
+            "type": "Expression"
+          },
+          "errorCode": "COMISIONES_500"
+        }
+      }
+    ]
+  }
+}
