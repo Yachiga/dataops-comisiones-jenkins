@@ -1,0 +1,17 @@
+JSON válido: adf/dataflow/df_join_salario_total.json
+JSON válido: adf/dataset/ds_csv_comisiones.json
+JSON válido: adf/dataset/ds_parquet_curated_salario_total.json
+JSON válido: adf/dataset/ds_parquet_staging_empleado.json
+JSON válido: adf/dataset/ds_pg_empleado.json
+JSON válido: adf/linkedService/ls_adls_datalake.json
+JSON válido: adf/linkedService/ls_blob_raw.json
+JSON válido: adf/linkedService/ls_keyvault.json
+JSON válido: adf/linkedService/ls_postgres_dmc.json
+JSON válido: adf/pipeline/pl_comisiones_salario_total.json
+JSON válido: adf/trigger/tr_blob_nuevo_csv_comisiones.json
+JSON válido: infra/arm/adf-content.json
+JSON válido: infra/arm/infra.json
+JSON válido: infra/arm/parameters/infra.dev.parameters.json
+JSON válido: infra/arm/parameters/infra.prod.parameters.json
+JSON válido: infra/arm/parameters/infra.test.parameters.json
+Total: 16 archivos JSON válidos
