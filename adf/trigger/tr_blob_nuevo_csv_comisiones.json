@@ -1,0 +1,33 @@
+{
+  "name": "tr_blob_nuevo_csv_comisiones",
+  "properties": {
+    "description": "Ejecuta el pipeline cuando llega un nuevo ComisionEmpleados_V1_*.csv a raw/comisiones.",
+    "annotations": [
+      "dataops-comisiones"
+    ],
+    "runtimeState": "Stopped",
+    "pipelines": [
+      {
+        "pipelineReference": {
+          "referenceName": "pl_comisiones_salario_total",
+          "type": "PipelineReference"
+        },
+        "parameters": {
+          "csvFileName": "@triggerBody().fileName",
+          "periodo": "@substring(triggerBody().fileName, 21, 6)",
+          "entorno": "dev"
+        }
+      }
+    ],
+    "type": "BlobEventsTrigger",
+    "typeProperties": {
+      "blobPathBeginsWith": "/raw/blobs/comisiones/ComisionEmpleados_V1_",
+      "blobPathEndsWith": ".csv",
+      "ignoreEmptyBlobs": true,
+      "scope": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-dataops-dev/providers/Microsoft.Storage/storageAccounts/stdataopsdev",
+      "events": [
+        "Microsoft.Storage.BlobCreated"
+      ]
+    }
+  }
+}

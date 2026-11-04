@@ -1,0 +1,30 @@
+{
+  "name": "ds_csv_comisiones",
+  "properties": {
+    "linkedServiceName": { "referenceName": "ls_blob_raw", "type": "LinkedServiceReference" },
+    "parameters": {
+      "fileName": { "type": "string", "defaultValue": "ComisionEmpleados_V1_202610.csv" }
+    },
+    "annotations": ["dataops-comisiones"],
+    "type": "DelimitedText",
+    "typeProperties": {
+      "location": {
+        "type": "AzureBlobStorageLocation",
+        "container": "raw",
+        "folderPath": "comisiones",
+        "fileName": { "value": "@dataset().fileName", "type": "Expression" }
+      },
+      "columnDelimiter": ";",
+      "rowDelimiter": "",
+      "encodingName": "UTF-8",
+      "escapeChar": "\\",
+      "quoteChar": "\"",
+      "firstRowAsHeader": true
+    },
+    "schema": [
+      { "name": "empleado_id", "type": "String" },
+      { "name": "Nombre y Apellido", "type": "String" },
+      { "name": "Comisión", "type": "String" }
+    ]
+  }
+}
