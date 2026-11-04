@@ -1,0 +1,152 @@
+{
+  "name": "df_join_salario_total",
+  "properties": {
+    "type": "MappingDataFlow",
+    "description": "Join empleado (PostgreSQL vía staging Parquet) con comisiones (CSV en Blob) por empleado_id; salario_total = mnt_salario + mnt_comision.",
+    "annotations": [
+      "dataops-comisiones"
+    ],
+    "typeProperties": {
+      "sources": [
+        {
+          "dataset": {
+            "referenceName": "ds_parquet_staging_empleado",
+            "type": "DatasetReference"
+          },
+          "name": "srcEmpleado",
+          "description": "Empleados extraídos de rrhh.empleado"
+        },
+        {
+          "dataset": {
+            "referenceName": "ds_csv_comisiones",
+            "type": "DatasetReference"
+          },
+          "name": "srcComisiones",
+          "description": "ComisionEmpleados_V1_AAAAMM.csv"
+        }
+      ],
+      "sinks": [
+        {
+          "dataset": {
+            "referenceName": "ds_parquet_curated_salario_total",
+            "type": "DatasetReference"
+          },
+          "name": "sinkSalarioTotal",
+          "description": "Consolidado en Data Lake (Parquet)"
+        }
+      ],
+      "transformations": [
+        {
+          "name": "drvTiposComision"
+        },
+        {
+          "name": "fltComisionValida"
+        },
+        {
+          "name": "selComision"
+        },
+        {
+          "name": "joinEmpleadoComision"
+        },
+        {
+          "name": "drvComisionNula"
+        },
+        {
+          "name": "drvSalarioTotal"
+        },
+        {
+          "name": "selSalida"
+        },
+        {
+          "name": "ordEmpleado"
+        }
+      ],
+      "scriptLines": [
+        "parameters{",
+        "     periodo as string ('202610'),",
+        "     entorno as string ('dev')",
+        "}",
+        "source(output(",
+        "          empleado_id as integer,",
+        "          tip_documento as string,",
+        "          num_documento as string,",
+        "          nom_empleado as string,",
+        "          ape_empleado as string,",
+        "          cod_cargo as string,",
+        "          cod_departamento as string,",
+        "          mnt_salario as decimal(12,2),",
+        "          mnt_tope_comision as decimal(12,2)",
+        "     ),",
+        "     allowSchemaDrift: true,",
+        "     validateSchema: false,",
+        "     ignoreNoFilesFound: false,",
+        "     format: 'parquet') ~> srcEmpleado",
+        "source(output(",
+        "          empleado_id as string,",
+        "          {Nombre y Apellido} as string,",
+        "          {Comisión} as string",
+        "     ),",
+        "     allowSchemaDrift: true,",
+        "     validateSchema: false,",
+        "     ignoreNoFilesFound: false) ~> srcComisiones",
+        "srcComisiones derive(com_empleado_id = toInteger(trim(empleado_id)),",
+        "          mnt_comision = toDecimal(trim({Comisión}), 12, 2),",
+        "          nombre_apellido_csv = trim(replace({Nombre y Apellido}, ',', ''))) ~> drvTiposComision",
+        "drvTiposComision filter(!isNull(com_empleado_id) && !isNull(mnt_comision) && mnt_comision >= toDecimal(0, 12, 2)) ~> fltComisionValida",
+        "fltComisionValida select(mapColumn(",
+        "          com_empleado_id,",
+        "          mnt_comision,",
+        "          nombre_apellido_csv",
+        "     ),",
+        "     skipDuplicateMapInputs: true,",
+        "     skipDuplicateMapOutputs: true) ~> selComision",
+        "srcEmpleado, selComision join(empleado_id == com_empleado_id,",
+        "     joinType:'left',",
+        "     matchType:'exact',",
+        "     ignoreSpaces: false,",
+        "     broadcast: 'auto')~> joinEmpleadoComision",
+        "joinEmpleadoComision derive(tiene_comision = !isNull(com_empleado_id),",
+        "          mnt_comision = iifNull(mnt_comision, toDecimal(0, 12, 2)),",
+        "          nombre_completo = concat(trim(nom_empleado), ' ', trim(ape_empleado))) ~> drvComisionNula",
+        "drvComisionNula derive(salario_total = toDecimal(mnt_salario + mnt_comision, 12, 2),",
+        "          supera_tope_comision = !isNull(mnt_tope_comision) && mnt_comision > mnt_tope_comision,",
+        "          periodo = $periodo,",
+        "          entorno = $entorno,",
+        "          fecha_proceso = currentTimestamp()) ~> drvSalarioTotal",
+        "drvSalarioTotal select(mapColumn(",
+        "          empleado_id,",
+        "          tip_documento,",
+        "          num_documento,",
+        "          nombre_completo,",
+        "          nom_empleado,",
+        "          ape_empleado,",
+        "          cod_cargo,",
+        "          cod_departamento,",
+        "          mnt_salario,",
+        "          mnt_comision,",
+        "          salario_total,",
+        "          mnt_tope_comision,",
+        "          tiene_comision,",
+        "          supera_tope_comision,",
+        "          periodo,",
+        "          entorno,",
+        "          fecha_proceso",
+        "     ),",
+        "     skipDuplicateMapInputs: true,",
+        "     skipDuplicateMapOutputs: true) ~> selSalida",
+        "selSalida sort(asc(empleado_id, true)) ~> ordEmpleado",
+        "ordEmpleado sink(allowSchemaDrift: true,",
+        "     validateSchema: false,",
+        "     format: 'parquet',",
+        "     truncate: true,",
+        "     umask: 0022,",
+        "     preCommands: [],",
+        "     postCommands: [],",
+        "     skipDuplicateMapInputs: true,",
+        "     skipDuplicateMapOutputs: true,",
+        "     partitionFileNames:['salario_total.parquet'],",
+        "     partitionBy('hash', 1)) ~> sinkSalarioTotal"
+      ]
+    }
+  }
+}

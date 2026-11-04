@@ -1,0 +1,12 @@
+{
+  "name": "ls_blob_raw",
+  "properties": {
+    "type": "AzureBlobStorage",
+    "description": "Blob Storage donde se deposita el CSV de comisiones (contenedor raw). Autenticación con Managed Identity del Data Factory.",
+    "annotations": ["dataops-comisiones"],
+    "typeProperties": {
+      "serviceEndpoint": "https://stdataopsdev.blob.core.windows.net/",
+      "accountKind": "StorageV2"
+    }
+  }
+}
