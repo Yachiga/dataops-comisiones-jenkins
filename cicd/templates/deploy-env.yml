@@ -1,0 +1,146 @@
+# Plantilla de despliegue reutilizada para dev / test / prod.
+# Las aprobaciones se configuran en el Environment de Azure DevOps
+# (Pipelines > Environments > dataops-<entorno> > Approvals and checks).
+parameters:
+  - name: entorno
+    type: string
+    values: [dev, test, prod]
+  - name: dependsOn
+    type: string
+  - name: condition
+    type: string
+    default: succeeded()
+
+stages:
+  - stage: CD_${{ upper(parameters.entorno) }}
+    displayName: 'CD - ${{ parameters.entorno }}'
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+    variables:
+      resourceGroup: 'rg-dataops-${{ parameters.entorno }}'
+    jobs:
+      - deployment: Desplegar
+        displayName: 'Desplegar infraestructura y ADF (${{ parameters.entorno }})'
+        environment: 'dataops-${{ parameters.entorno }}'
+        pool: { vmImage: 'ubuntu-latest' }
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: drop
+
+                - task: AzureCLI@2
+                  displayName: 'Crear grupo de recursos'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: az group create -n $(resourceGroup) -l $(location) -o table
+
+                - task: AzureResourceManagerTemplateDeployment@3
+                  name: infra
+                  displayName: 'ARM: Storage (ADLS Gen2) + Key Vault + Data Factory'
+                  inputs:
+                    deploymentScope: 'Resource Group'
+                    azureResourceManagerConnection: $(azureServiceConnection)
+                    subscriptionId: $(AZURE_SUBSCRIPTION_ID)
+                    action: 'Create Or Update Resource Group'
+                    resourceGroupName: $(resourceGroup)
+                    location: $(location)
+                    templateLocation: 'Linked artifact'
+                    csmFile: '$(Pipeline.Workspace)/drop/infra/arm/infra.json'
+                    csmParametersFile: '$(Pipeline.Workspace)/drop/infra/arm/parameters/infra.${{ parameters.entorno }}.parameters.json'
+                    overrideParameters: '-pgPassword "$(PG_PASSWORD)"'
+                    deploymentMode: 'Incremental'
+                    deploymentOutputs: 'infraOutputs'
+
+                - task: AzureCLI@2
+                  name: outs
+                  displayName: 'Leer salidas de la plantilla'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      o='$(infraOutputs)'
+                      for k in factoryName storageAccountName blobEndpoint dfsEndpoint storageAccountId keyVaultUri; do
+                        v=$(echo "$o" | jq -r ".${k}.value")
+                        echo "##vso[task.setvariable variable=${k}]${v}"
+                        echo "${k}=${v}"
+                      done
+
+                - task: AzureCLI@2
+                  displayName: 'Detener triggers antes de desplegar'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      az extension add -n datafactory --upgrade -y -o none
+                      az datafactory trigger stop -g $(resourceGroup) --factory-name $(factoryName) \
+                        --name tr_blob_nuevo_csv_comisiones 2>/dev/null || echo "Trigger aún no existe"
+
+                - task: AzureResourceManagerTemplateDeployment@3
+                  displayName: 'ARM: contenido ADF (linked services, datasets, data flow, pipeline, trigger)'
+                  inputs:
+                    deploymentScope: 'Resource Group'
+                    azureResourceManagerConnection: $(azureServiceConnection)
+                    subscriptionId: $(AZURE_SUBSCRIPTION_ID)
+                    action: 'Create Or Update Resource Group'
+                    resourceGroupName: $(resourceGroup)
+                    location: $(location)
+                    templateLocation: 'Linked artifact'
+                    csmFile: '$(Pipeline.Workspace)/drop/infra/arm/adf-content.json'
+                    overrideParameters: >-
+                      -factoryName $(factoryName) -entorno ${{ parameters.entorno }}
+                      -keyVaultUri $(keyVaultUri) -blobEndpoint $(blobEndpoint)
+                      -dfsEndpoint $(dfsEndpoint) -storageAccountId $(storageAccountId)
+                    deploymentMode: 'Incremental'
+
+                - task: AzureCLI@2
+                  displayName: 'Cargar CSV de comisiones a raw/comisiones'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      az storage blob upload --auth-mode login --overwrite \
+                        --account-name $(storageAccountName) -c raw \
+                        -n comisiones/$(csvFileName) \
+                        -f $(Pipeline.Workspace)/drop/data/input/$(csvFileName)
+
+                - task: AzureCLI@2
+                  displayName: 'Prueba de humo: ejecutar pl_comisiones_salario_total'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: bash
+                    scriptLocation: scriptPath
+                    scriptPath: '$(Pipeline.Workspace)/drop/scripts/smoke_test_adf.sh'
+                    arguments: '$(resourceGroup) $(factoryName) $(csvFileName) $(periodo) ${{ parameters.entorno }}'
+
+                - task: UsePythonVersion@0
+                  inputs: { versionSpec: '$(pythonVersion)' }
+
+                - task: AzureCLI@2
+                  displayName: 'Validar Parquet generado en el Data Lake'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      pip install -q pandas pyarrow azure-identity azure-storage-file-datalake
+                      python $(Pipeline.Workspace)/drop/scripts/verify_parquet.py \
+                        --account $(storageAccountName) --periodo $(periodo) \
+                        --csv $(Pipeline.Workspace)/drop/data/input/$(csvFileName)
+
+                - task: AzureCLI@2
+                  displayName: 'Activar trigger de eventos'
+                  condition: and(succeeded(), ne('${{ parameters.entorno }}', 'test'))
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      az datafactory trigger start -g $(resourceGroup) --factory-name $(factoryName) \
+                        --name tr_blob_nuevo_csv_comisiones || echo "No se pudo activar el trigger (¿proveedor Microsoft.EventGrid registrado?)"
