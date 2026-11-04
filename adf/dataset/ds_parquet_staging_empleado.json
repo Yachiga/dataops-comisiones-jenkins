@@ -1,0 +1,19 @@
+{
+  "name": "ds_parquet_staging_empleado",
+  "properties": {
+    "linkedServiceName": { "referenceName": "ls_adls_datalake", "type": "LinkedServiceReference" },
+    "parameters": { "periodo": { "type": "string" } },
+    "annotations": ["dataops-comisiones"],
+    "type": "Parquet",
+    "typeProperties": {
+      "location": {
+        "type": "AzureBlobFSLocation",
+        "fileSystem": "staging",
+        "folderPath": { "value": "@concat('rrhh/empleado/periodo=', dataset().periodo)", "type": "Expression" },
+        "fileName": "empleado.parquet"
+      },
+      "compressionCodec": "snappy"
+    },
+    "schema": []
+  }
+}

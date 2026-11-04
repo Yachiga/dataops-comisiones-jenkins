@@ -1,0 +1,10 @@
+{
+  "name": "ds_pg_empleado",
+  "properties": {
+    "linkedServiceName": { "referenceName": "ls_postgres_dmc", "type": "LinkedServiceReference" },
+    "annotations": ["dataops-comisiones"],
+    "type": "PostgreSqlV2Table",
+    "schema": [],
+    "typeProperties": { "schema": "rrhh", "table": "empleado" }
+  }
+}
