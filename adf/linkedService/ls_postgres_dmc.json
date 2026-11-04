@@ -1,0 +1,21 @@
+{
+  "name": "ls_postgres_dmc",
+  "properties": {
+    "type": "PostgreSqlV2",
+    "description": "Base PostgreSQL dmc (schema rrhh). Usuario de solo lectura; la contraseña vive en Key Vault.",
+    "annotations": ["dataops-comisiones"],
+    "typeProperties": {
+      "server": "mgg.vps.webdock.cloud",
+      "port": 5432,
+      "database": "dmc",
+      "username": "usr_ro_dmc_rrhh_estudiantes",
+      "sslMode": 2,
+      "authenticationType": "Basic",
+      "password": {
+        "type": "AzureKeyVaultSecret",
+        "store": { "referenceName": "ls_keyvault", "type": "LinkedServiceReference" },
+        "secretName": "pg-dmc-password"
+      }
+    }
+  }
+}
