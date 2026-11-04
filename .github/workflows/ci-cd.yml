@@ -1,0 +1,76 @@
+# Alternativa en GitHub Actions (si el repositorio se aloja en GitHub en vez de Azure Repos).
+# Requiere secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, PG_PASSWORD
+# y los environments dev / test / prod (prod con "Required reviewers" o "Wait timer").
+name: ci-cd-comisiones
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  CSV_FILE: ComisionEmpleados_V1_202610.csv
+  PERIODO: "202610"
+  LOCATION: eastus2
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check src tests scripts
+      - run: python -m pytest --junitxml=reports/junit.xml
+      - run: python scripts/build_adf_arm.py --check
+      - run: PYTHONPATH=src python -m comisiones.pipeline --modo local --empleados-file tests/fixtures/empleados_fixture.csv --csv data/input/$CSV_FILE --salida output
+      - uses: actions/upload-artifact@v4
+        with: { name: salida-prueba, path: output }
+
+  deploy:
+    if: github.event_name == 'push'
+    needs: ci
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        entorno: [dev, test, prod]
+    environment: ${{ matrix.entorno }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: matrix.entorno == 'prod' && github.ref != 'refs/heads/main'
+        run: echo "prod solo se despliega desde main" && exit 0
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Infraestructura
+        id: infra
+        run: |
+          RG=rg-dataops-${{ matrix.entorno }}
+          az group create -n $RG -l $LOCATION -o none
+          OUT=$(az deployment group create -g $RG --template-file infra/arm/infra.json \
+            --parameters @infra/arm/parameters/infra.${{ matrix.entorno }}.parameters.json \
+            --parameters pgPassword='${{ secrets.PG_PASSWORD }}' --query properties.outputs -o json)
+          for k in factoryName storageAccountName blobEndpoint dfsEndpoint storageAccountId keyVaultUri; do
+            echo "$k=$(echo "$OUT" | jq -r .$k.value)" >> "$GITHUB_OUTPUT"
+          done
+          echo "rg=$RG" >> "$GITHUB_OUTPUT"
+      - name: Contenido ADF
+        run: |
+          az deployment group create -g ${{ steps.infra.outputs.rg }} --template-file infra/arm/adf-content.json \
+            --parameters factoryName=${{ steps.infra.outputs.factoryName }} entorno=${{ matrix.entorno }} \
+              keyVaultUri=${{ steps.infra.outputs.keyVaultUri }} blobEndpoint=${{ steps.infra.outputs.blobEndpoint }} \
+              dfsEndpoint=${{ steps.infra.outputs.dfsEndpoint }} storageAccountId=${{ steps.infra.outputs.storageAccountId }} -o none
+      - name: Cargar CSV y prueba de humo
+        run: |
+          az storage blob upload --auth-mode login --overwrite --account-name ${{ steps.infra.outputs.storageAccountName }} \
+            -c raw -n comisiones/$CSV_FILE -f data/input/$CSV_FILE
+          bash scripts/smoke_test_adf.sh ${{ steps.infra.outputs.rg }} ${{ steps.infra.outputs.factoryName }} $CSV_FILE $PERIODO ${{ matrix.entorno }}
