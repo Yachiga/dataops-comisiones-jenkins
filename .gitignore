@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+output/
+reports/
+.pytest_cache/
+.coverage
+*.parquet
+!tests/fixtures/*.parquet
