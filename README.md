@@ -1,10 +1,36 @@
-# DataOps · Cálculo de salario total con comisiones (versión Jenkins)
+# Proyecto DataOps · Cálculo del salario total con comisiones
 
-> **CI/CD activo:** Jenkins (`Jenkinsfile`). Los workflows de GitHub Actions están desactivados en este repositorio.
-> Versión equivalente con GitHub Actions: https://github.com/Yachiga/dataops-comisiones
+**Curso:** DE – DataOps (DMC) · Asignación Proyecto 60%  
+**Tema:** Proyecto DataOps con Azure DevOps y Azure Data Factory  
+**Alumno:** Yvan Chirinos · **Docente:** Miguel Ángel García
+
+> En esta versión el CI/CD corre en **Jenkins** (`Jenkinsfile`); los workflows de GitHub Actions están desactivados.
+> Hice también una versión con GitHub Actions: https://github.com/Yachiga/dataops-comisiones
+
+## Sobre este proyecto
+
+Este repositorio es mi solución a la asignación del curso. El caso es un cliente que quiere calcular
+cada mes el salario total de sus empleados juntando la tabla `dmc.rrhh.empleado` (PostgreSQL) con un
+CSV de comisiones, y que ese flujo se despliegue solo, de desarrollo a producción, con CI/CD.
+
+Lo que construí:
+
+* Un **pipeline en Python** que extrae los empleados de PostgreSQL, lee el CSV, hace el Join por
+  `empleado_id`, calcula `salario_total` y genera un **Parquet**. Es el que se ejecuta en los tres entornos.
+* El **mismo flujo en Azure Data Factory** (copy, validación, data flow y trigger), con **plantillas ARM**
+  para desplegar el Storage, el Key Vault y el Data Factory por entorno.
+* Un **CI/CD en Jenkins** que, en cada cambio, corre el lint, las 58 pruebas y la validación de las
+  plantillas, y luego despliega a **dev → test → prod**. Producción solo se despliega con aprobación.
+
+Elegí Jenkins porque el enunciado lo permite como alternativa a Azure DevOps, y porque pude
+levantarlo en mi equipo con Docker. La cuenta de Azure del curso no tenía suscripciones
+disponibles, así que el pipeline de Data Factory y las plantillas ARM quedaron listos y validados,
+pero no desplegados. En la [sección 7](#7-paso-a-paso-despliegue-en-azure-arm--data-factory) explico cómo
+desplegarlos cuando haya acceso.
 
 ## Índice
 
+0. [Sobre este proyecto](#sobre-este-proyecto)
 1. [Objetivo](#1-objetivo)
 2. [Contenido del repositorio](#2-contenido-del-repositorio)
 3. [Arquitectura y flujo de datos](#3-arquitectura-y-flujo-de-datos)
@@ -17,12 +43,13 @@
 10. [Resultados esperados y verificación](#10-resultados-esperados-y-verificación)
 11. [Seguridad](#11-seguridad)
 12. [Solución de problemas](#12-solución-de-problemas)
+13. [Lo que aprendí](#13-lo-que-aprendí)
 
 ---
 
 ## 1. Objetivo
 
-Automatizar el cálculo del **salario total** de cada empleado:
+El objetivo es automatizar el cálculo del **salario total** de cada empleado:
 
 1. **Extraer** la tabla `dmc.rrhh.empleado` de PostgreSQL (`mgg.vps.webdock.cloud:5432`, base `dmc`, esquema `rrhh`).
 2. **Procesar** el archivo de comisiones `ComisionEmpleados_V1_AAAAMM.csv`.
@@ -36,7 +63,7 @@ Automatizar el cálculo del **salario total** de cada empleado:
 5. **Escribir** la tabla consolidada en formato **Parquet** en el Data Lake (también Excel y CSV en modo local).
 6. **Desplegar** automáticamente a los entornos **dev → test → prod**, con pruebas y aprobación antes de producción.
 
-El flujo existe en dos implementaciones equivalentes:
+Implementé el flujo de dos formas equivalentes:
 
 | Implementación | Carpeta | Cuándo se usa |
 |---|---|---|
@@ -160,6 +187,8 @@ Blob raw/comisiones/ComisionEmpleados_V1_AAAAMM.csv ──Validation────
 
 ## 5. Paso a paso: ejecución local
 
+Así lo ejecuto en mi equipo antes de subir cambios:
+
 **Paso 1 – Clonar el repositorio**
 
 ```bash
@@ -250,7 +279,7 @@ Parámetros del job:
 
 ### 6.2 Paso 1 – Levantar Jenkins con Docker
 
-En PowerShell (con Docker Desktop abierto):
+Yo lo levanté en Windows con Docker Desktop. En PowerShell:
 
 ```powershell
 docker run -d --name jenkins-dataops -p 8090:8080 -u root `
@@ -422,7 +451,7 @@ Las tres herramientas llaman al mismo `scripts/deploy.sh`, así que el despliegu
 
 ## 10. Resultados esperados y verificación
 
-Con el periodo 202610 y la base real, los tres entornos producen:
+Estos son los resultados que obtuve con el periodo 202610 y la base real (iguales en dev, test y prod):
 
 | Indicador | Valor |
 |---|---|
@@ -452,6 +481,8 @@ Con el periodo 202610 y la base real, los tres entornos producen:
 
 ## 12. Solución de problemas
 
+Varios de estos errores me salieron mientras armaba el proyecto; los dejo con su solución:
+
 | Síntoma | Causa | Solución |
 |---|---|---|
 | `python3: not found` en *Preparar entorno Python* | Python no está instalado en el contenedor | Ejecutar el paso 6.3 |
@@ -463,3 +494,15 @@ Con el periodo 202610 y la base real, los tres entornos producen:
 | CI falla en `build_adf_arm.py --check` | Se cambió `adf/` sin regenerar la plantilla | `python scripts/build_adf_arm.py` y commit |
 | `AuthorizationFailed` o "No subscriptions found" en Azure | La cuenta no tiene acceso a la suscripción o el rol Contributor | Pedir acceso al administrador; mientras tanto usar `DESTINO=local` |
 | `Copiar_Empleados_PostgreSQL` falla por timeout en ADF | El servidor PostgreSQL no admite la IP del Azure IR | Usar un Self-hosted IR o pedir apertura del firewall |
+
+---
+
+## 13. Lo que aprendí
+
+* Separar el código del flujo (`src/`, `adf/`) de la infraestructura (`infra/arm/`) y del CI/CD (`Jenkinsfile`)
+  hace que cada cambio se pueda probar por separado.
+* Las pruebas automáticas y la aprobación manual antes de producción evitan que un error llegue al
+  entorno final: en mis ejecuciones, cuando algo fallaba el pipeline se detenía y no avanzaba.
+* Las contraseñas nunca deben ir en el repositorio: Jenkins las guarda como credenciales y las oculta en los logs.
+
+*Trabajo realizado por Yvan Chirinos para el curso DE – DataOps de DMC, noviembre de 2026.*
