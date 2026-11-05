@@ -1,242 +1,465 @@
 # DataOps · Cálculo de salario total con comisiones (versión Jenkins)
 
-> Esta versión ejecuta el CI/CD en **Jenkins** (`Jenkinsfile`). GitHub Actions está desactivado en este repositorio.
-> Versión con GitHub Actions: https://github.com/Yachiga/dataops-comisiones
+> **CI/CD activo:** Jenkins (`Jenkinsfile`). Los workflows de GitHub Actions están desactivados en este repositorio.
+> Versión equivalente con GitHub Actions: https://github.com/Yachiga/dataops-comisiones
 
-Flujo automatizado que combina la tabla **`dmc.rrhh.empleado`** (PostgreSQL) con el archivo
-**`ComisionEmpleados_V1_AAAAMM.csv`** (Azure Blob Storage), hace un **Join por `empleado_id`**,
-calcula
+## Índice
 
-```
-salario_total = mnt_salario + mnt_comision
-```
-
-y escribe el consolidado en **Parquet** en el Data Lake (ADLS Gen2). El despliegue a
-**dev → test → prod** está automatizado con **Jenkins** (CI/CD) y plantillas **ARM**.
-
-El flujo se entrega en dos implementaciones equivalentes:
-
-| Implementación | Dónde | Uso |
-|---|---|---|
-| **Azure Data Factory** (principal) | `adf/` → `infra/arm/adf-content.json` | Producción, desplegada por CD |
-| **Script Python** | `src/comisiones/` | Pruebas en CI, ejecución local o alternativa a ADF |
+1. [Objetivo](#1-objetivo)
+2. [Contenido del repositorio](#2-contenido-del-repositorio)
+3. [Arquitectura y flujo de datos](#3-arquitectura-y-flujo-de-datos)
+4. [Requisitos previos](#4-requisitos-previos)
+5. [Paso a paso: ejecución local](#5-paso-a-paso-ejecución-local)
+6. [Paso a paso: despliegue con Jenkins (dev → test → prod)](#6-paso-a-paso-despliegue-con-jenkins-dev--test--prod)
+7. [Paso a paso: despliegue en Azure (ARM + Data Factory)](#7-paso-a-paso-despliegue-en-azure-arm--data-factory)
+8. [Otras herramientas de CI/CD incluidas](#8-otras-herramientas-de-cicd-incluidas)
+9. [Flujo de trabajo Git](#9-flujo-de-trabajo-git)
+10. [Resultados esperados y verificación](#10-resultados-esperados-y-verificación)
+11. [Seguridad](#11-seguridad)
+12. [Solución de problemas](#12-solución-de-problemas)
 
 ---
 
-## Arquitectura
+## 1. Objetivo
+
+Automatizar el cálculo del **salario total** de cada empleado:
+
+1. **Extraer** la tabla `dmc.rrhh.empleado` de PostgreSQL (`mgg.vps.webdock.cloud:5432`, base `dmc`, esquema `rrhh`).
+2. **Procesar** el archivo de comisiones `ComisionEmpleados_V1_AAAAMM.csv`.
+3. **Unir** ambas fuentes por `empleado_id`.
+4. **Calcular**
+
+   ```
+   salario_total = mnt_salario + mnt_comision
+   ```
+
+5. **Escribir** la tabla consolidada en formato **Parquet** en el Data Lake (también Excel y CSV en modo local).
+6. **Desplegar** automáticamente a los entornos **dev → test → prod**, con pruebas y aprobación antes de producción.
+
+El flujo existe en dos implementaciones equivalentes:
+
+| Implementación | Carpeta | Cuándo se usa |
+|---|---|---|
+| **Script Python** | `src/comisiones/` | Lo ejecuta Jenkins en cada entorno (`DESTINO=local`), en local y en las pruebas |
+| **Azure Data Factory** | `adf/` → `infra/arm/adf-content.json` | Despliegue en Azure (`DESTINO=azure`) con plantillas ARM |
+
+---
+
+## 2. Contenido del repositorio
+
+```
+dataops-comisiones-jenkins/
+├── Jenkinsfile                     # CI/CD: CI → CD dev → CD test → aprobación → CD prod
+├── README.md                       # este documento
+├── requirements.txt                # dependencias del pipeline (pandas, pyarrow, SQLAlchemy, psycopg2, azure-*)
+├── requirements-dev.txt            # + pytest, pytest-cov, ruff, PyYAML (CI)
+├── pyproject.toml                  # configuración de pytest y ruff
+├── .env.example                    # plantilla de variables (PG_HOST, PG_USER, PG_PASSWORD vacío…)
+│
+├── src/comisiones/                 # PIPELINE PYTHON
+│   ├── config.py                   #   lee variables de entorno por entorno (dev/test/prod); oculta la contraseña
+│   ├── extract.py                  #   PostgreSQL (SQLAlchemy) y lectura del CSV (separador ";")
+│   ├── transform.py                #   limpieza, reglas de calidad, LEFT JOIN y salario_total
+│   ├── load.py                     #   escritura Parquet/Excel/CSV local o en ADLS Gen2
+│   └── pipeline.py                 #   orquestador (CLI: --entorno --modo --csv --salida --formatos)
+│
+├── adf/                            # PIPELINE DE AZURE DATA FACTORY (formato Git de ADF)
+│   ├── linkedService/              #   ls_postgres_dmc, ls_blob_raw, ls_adls_datalake, ls_keyvault
+│   ├── dataset/                    #   ds_pg_empleado, ds_csv_comisiones, ds_parquet_staging_empleado,
+│   │                               #   ds_parquet_curated_salario_total
+│   ├── dataflow/                   #   df_join_salario_total (LEFT JOIN + salario_total)
+│   ├── pipeline/                   #   pl_comisiones_salario_total
+│   └── trigger/                    #   tr_blob_nuevo_csv_comisiones (al llegar un CSV nuevo)
+│
+├── infra/arm/                      # PLANTILLAS ARM
+│   ├── infra.json                  #   Storage ADLS Gen2 + contenedores + Key Vault + secretos + Data Factory
+│   ├── adf-content.json            #   contenido de ADF (generado desde adf/ por scripts/build_adf_arm.py)
+│   └── parameters/
+│       ├── infra.dev.parameters.json
+│       ├── infra.test.parameters.json
+│       └── infra.prod.parameters.json
+│
+├── scripts/
+│   ├── build_adf_arm.py            # convierte adf/ en la plantilla ARM; --check falla si no está sincronizada
+│   ├── deploy.sh                   # despliegue completo de un entorno en Azure (7 pasos)
+│   ├── smoke_test_adf.sh           # ejecuta el pipeline de ADF y espera "Succeeded"
+│   ├── verify_parquet.py           # valida el Parquet (local o en ADLS): fórmula, duplicados y totales
+│   └── publicar_github.sh          # sube ramas y etiquetas a GitHub
+│
+├── tests/                          # 58 PRUEBAS (pytest)
+│   ├── test_transform.py           #   lectura del CSV, Join, fórmula, reglas de calidad
+│   ├── test_pipeline.py            #   flujo completo, códigos de salida, configuración, contraseña oculta
+│   ├── test_adf_artifacts.py       #   JSON de ADF/ARM, referencias, plantilla al día, CI/CD, sin secretos
+│   └── fixtures/empleados_fixture.csv
+│
+├── data/input/ComisionEmpleados_V1_202610.csv   # archivo de comisiones del periodo 202610
+├── docs/                                        # diagramas de arquitectura (flujo y CI/CD)
+├── sql/extract_empleado.sql                     # consulta de extracción
+├── azure-pipelines.yml + cicd/templates/        # alternativa Azure DevOps (no activa aquí)
+└── .github/workflows/                           # alternativa GitHub Actions (desactivada aquí)
+```
+
+---
+
+## 3. Arquitectura y flujo de datos
+
+### 3.1 Flujo con Python (lo que ejecuta Jenkins)
+
+```
+PostgreSQL dmc.rrhh.empleado ──extract.py──┐
+                                            ├──► transform.py (LEFT JOIN por empleado_id, salario_total)
+data/input/ComisionEmpleados_V1_202610.csv ┘                │
+                                                             ▼
+                                   load.py ──► datalake/<entorno>/salario_total_202610.parquet (+ .xlsx, .csv)
+                                                             │
+                                                             ▼
+                                         verify_parquet.py ──► "OK: Parquet validado"
+```
+
+### 3.2 Flujo con Azure Data Factory
 
 ```
 PostgreSQL dmc.rrhh.empleado ──Copy──► ADLS staging/rrhh/empleado/periodo=AAAAMM/empleado.parquet ─┐
-                                                                                                   ├─► Data Flow (LEFT JOIN empleado_id)
+                                                                                                   ├─► Data Flow df_join_salario_total
 Blob raw/comisiones/ComisionEmpleados_V1_AAAAMM.csv ──Validation──────────────────────────────────┘        │
                                                                                                             ▼
                                                      ADLS curated/comisiones/salario_total/periodo=AAAAMM/salario_total.parquet
 ```
 
-* **Linked services:** `ls_postgres_dmc` (PostgreSQL V2, contraseña en Key Vault), `ls_blob_raw`
-  (Blob) y `ls_adls_datalake` (ADLS Gen2) con la clave del Storage guardada en Key Vault, `ls_keyvault`.
-* **Pipeline `pl_comisiones_salario_total`:** `Validar_CSV_Comisiones` + `Copiar_Empleados_PostgreSQL`
-  → `Join_Calcular_Salario_Total` (Data Flow) → `Fallo_Pipeline` si algo falla.
-* **Trigger `tr_blob_nuevo_csv_comisiones`:** se dispara al llegar un nuevo CSV a `raw/comisiones/`.
+* **Pipeline `pl_comisiones_salario_total`:** `Validar_CSV_Comisiones` y `Copiar_Empleados_PostgreSQL` en paralelo → `Join_Calcular_Salario_Total` (Data Flow) → `Fallo_Pipeline` si algo falla.
+* **Linked services:** las contraseñas (PostgreSQL y Storage) se leen de **Key Vault**.
+* **Trigger:** `tr_blob_nuevo_csv_comisiones` ejecuta el pipeline cuando llega un CSV nuevo a `raw/comisiones/`.
 
-### Reglas de negocio y calidad
+### 3.3 Reglas de negocio y calidad
 
-* **LEFT JOIN** desde empleados: ningún empleado se pierde; quien no está en el CSV recibe
-  comisión 0 y `tiene_comision = false`.
-* Se rechaza el CSV si tiene `empleado_id` duplicados, valores no numéricos o comisiones negativas.
-* `supera_tope_comision` marca las comisiones mayores que `mnt_tope_comision` (informativo; la
-  fórmula pedida no aplica el tope).
-* Las comisiones cuyo `empleado_id` no existe en la tabla se reportan en el log y en
-  `reporte_ejecucion.json`.
-* El CSV usa `;` como separador y el nombre viene como `"Nombre, Apellido"`: la coma es parte del texto.
+| Regla | Comportamiento |
+|---|---|
+| LEFT JOIN desde empleados | Ningún empleado se pierde; quien no está en el CSV recibe comisión 0 y `tiene_comision = false` |
+| `empleado_id` duplicado en el CSV | El pipeline se detiene (código de salida 2) |
+| Comisión negativa o no numérica | El pipeline se detiene (código de salida 2) |
+| Comisión sin empleado en la tabla | Se reporta en el log y en `reporte_ejecucion.json` |
+| Comisión mayor que `mnt_tope_comision` | Se marca en `supera_tope_comision` (informativo, no se recorta) |
+| Formato del CSV | Separador `;`; el nombre viene como `"Nombre, Apellido"` y la coma es parte del texto |
 
-### Columnas de salida
-
-`empleado_id, tip_documento, num_documento, nombre_completo, nom_empleado, ape_empleado, cod_cargo,
-cod_departamento, mnt_salario, mnt_comision, salario_total, mnt_tope_comision, tiene_comision,
-supera_tope_comision, periodo, entorno, fecha_proceso`
+**Columnas de salida:** `empleado_id, tip_documento, num_documento, nombre_completo, nom_empleado, ape_empleado, cod_cargo, cod_departamento, mnt_salario, mnt_comision, salario_total, mnt_tope_comision, tiene_comision, supera_tope_comision, periodo, entorno, fecha_proceso`.
 
 ---
 
-## Estructura del repositorio
+## 4. Requisitos previos
 
-```
-├── adf/                      # Artefactos ADF (formato Git de Data Factory) – fuente única de verdad
-│   ├── linkedService/  dataset/  dataflow/  pipeline/  trigger/
-├── infra/arm/
-│   ├── infra.json            # Storage ADLS Gen2 + contenedores + Key Vault (secretos) + Data Factory
-│   ├── adf-content.json      # Generado desde adf/ por scripts/build_adf_arm.py
-│   └── parameters/infra.{dev,test,prod}.parameters.json
-├── src/comisiones/           # Pipeline Python (config, extract, transform, load, pipeline)
-├── tests/                    # pytest: transformación, flujo completo, artefactos ADF/ARM, secretos
-├── scripts/
-│   ├── build_adf_arm.py      # adf/ -> ARM parametrizado por entorno (--check en CI)
-│   ├── deploy.sh             # despliegue completo de un entorno (lo usan todos los CI/CD)
-│   ├── publicar_github.sh    # sube ramas y etiquetas a GitHub
-│   ├── smoke_test_adf.sh     # lanza el pipeline ADF y espera "Succeeded"
-│   └── verify_parquet.py     # valida el Parquet escrito en curated
-├── azure-pipelines.yml       # CI + CD dev/test/prod (Azure DevOps)
-├── cicd/templates/deploy-env.yml
-├── Jenkinsfile               # CI + CD dev/test/prod (Jenkins) – herramienta activa
-├── .github/workflows/        # alternativa GitHub Actions (desactivada en este repositorio)
-├── data/input/ComisionEmpleados_V1_202610.csv
-└── sql/extract_empleado.sql
-```
-
----
-
-## Ejecución local (Python)
-
-```bash
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements-dev.txt
-cp .env.example .env                                   # completar PG_PASSWORD
-export $(grep -v '^#' .env | xargs)                    # o usar python-dotenv
-
-# Pruebas
-python -m pytest
-
-# Contra la base PostgreSQL real + CSV local -> output/
-PYTHONPATH=src python -m comisiones.pipeline --modo local --entorno dev \
-  --csv data/input/ComisionEmpleados_V1_202610.csv
-
-# Contra Azure (descarga el CSV del Blob y escribe Parquet en ADLS)
-PYTHONPATH=src python -m comisiones.pipeline --modo azure --entorno dev
-```
-
-Salida local: `output/salario_total_202610.parquet`, `.xlsx`, `.csv` y `reporte_ejecucion.json`.
-Códigos de salida: `0` éxito, `2` validación de calidad fallida, `1` error inesperado.
-
----
-
-## Publicar el repositorio en GitHub
-
-1. Crear el repositorio **vacío** `dataops-comisiones-jenkins` en https://github.com/new con la cuenta `Yachiga`
-   (sin README ni .gitignore).
-2. Crear un *Personal Access Token* (Settings → Developer settings → Tokens, permiso `repo`): GitHub
-   lo pide como contraseña al hacer `git push`.
-3. Desde la carpeta del proyecto:
-
-```bash
-bash scripts/publicar_github.sh Yachiga dataops-comisiones-jenkins   # sube main, develop y las etiquetas
-```
-
----
-
-## Despliegue en Azure
-
-Toda la lógica de despliegue está en **`scripts/deploy.sh <dev|test|prod>`**: ARM de
-infraestructura → detener trigger → ARM del contenido ADF → subir CSV → ejecutar el pipeline ADF
-(prueba de humo) → validar el Parquet → activar trigger. Lo llaman Azure DevOps, Jenkins y GitHub
-Actions, y también se puede ejecutar a mano.
-
-La plantilla **no crea asignaciones de roles**: basta el rol *Contributor* (cuentas de laboratorio).
-ADF lee la contraseña de PostgreSQL y la clave del Storage desde Key Vault mediante una *access
-policy* de su Managed Identity.
-
-### 1. Preparar Azure (una vez)
-
-```bash
-az login                                                     # abre el navegador (admite MFA)
-az account show -o table                                     # confirmar la suscripción del curso
-az provider register --namespace Microsoft.DataFactory
-az provider register --namespace Microsoft.EventGrid        # para el trigger de eventos
-```
-
-### 2. Despliegue manual (sin herramienta de CI/CD)
-
-```bash
-export PG_PASSWORD='<contraseña de usr_ro_dmc_rrhh_estudiantes>'
-export RESOURCE_GROUP='<grupo asignado por el curso>'        # opcional; por defecto rg-dataops-<entorno>
-bash scripts/deploy.sh dev
-```
-
-### 3. Opción A – Azure DevOps
-
-1. Crear un proyecto en https://dev.azure.com.
-2. **Service connection** (*Project settings → Service connections → Azure Resource Manager →
-   Workload Identity federation (automatic)*), nombre **`sc-dataops-comisiones`**, con alcance al
-   grupo de recursos o a la suscripción. Si la cuenta del curso no puede crear app registrations,
-   pedir al docente un Service Principal y usar *Service principal (manual)*.
-3. **Variable group** **`vg-dataops-comisiones`** (*Pipelines → Library*): `PG_PASSWORD` (secreta) y
-   `AZURE_SUBSCRIPTION_ID`. Si solo hay un grupo de recursos, editar `resourceGroup_dev/test/prod`
-   en `azure-pipelines.yml` con ese nombre.
-4. **Environments** (*Pipelines → Environments*): `dataops-dev`, `dataops-test`, `dataops-prod`.
-   En `dataops-prod` → *Approvals and checks*: **Branch control** (solo `refs/heads/main`) y
-   **Approvals** o una comprobación automática (*Business hours* / *Invoke REST API*).
-5. **Pipelines → New pipeline → GitHub → yachiga/dataops-comisiones → Existing YAML** →
-   `/azure-pipelines.yml`.
-
-| Etapa | Cuándo | Qué hace |
+| Requisito | Versión | Para qué |
 |---|---|---|
-| **CI** | todo push y PR a `main`/`develop` | ruff, pytest (JUnit + cobertura), ejecución de prueba del pipeline Python, `build_adf_arm.py --check`, `az deployment group validate`, publica artefacto `drop` |
-| **CD_DEV** | push a `develop` o `main` | `scripts/deploy.sh dev` |
-| **CD_TEST** | tras CD_DEV | `scripts/deploy.sh test` (trigger queda detenido) |
-| **CD_PROD** | solo rama `main`, tras CD_TEST y los checks del environment | `scripts/deploy.sh prod` |
+| Git | cualquiera | clonar el repositorio |
+| Python | 3.10 o superior | ejecución local y en el agente Jenkins |
+| Docker Desktop | cualquiera | levantar Jenkins en el equipo |
+| Acceso a PostgreSQL | usuario de solo lectura `usr_ro_dmc_rrhh_estudiantes` | extraer `rrhh.empleado` |
+| Cuenta de GitHub | — | alojar el repositorio que lee Jenkins |
+| Suscripción de Azure + Azure CLI | solo para `DESTINO=azure` | desplegar ARM y Data Factory |
 
-### 4. Opción C – GitHub Actions (desactivada en este repositorio)
+---
 
-`.github/workflows/ci-cd.yml` ejecuta CI en cada push y PR, y CD dev → test → prod (prod solo
-desde `main`, con aprobación del environment `prod`). El despliegue está en
-`.github/workflows/deploy.yml`:
+## 5. Paso a paso: ejecución local
 
-* Variable de repositorio `DESTINO=local` (por defecto): ejecuta el pipeline Python contra la base
-  PostgreSQL real y publica el Parquet como artefacto `datalake-<entorno>`.
-* `DESTINO=azure`: ejecuta `scripts/deploy.sh` (requiere los secrets `AZURE_CLIENT_ID`,
-  `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`).
-* Secret obligatorio: `PG_PASSWORD` (*Settings → Secrets and variables → Actions*).
+**Paso 1 – Clonar el repositorio**
 
-### 5. Opción B – Jenkins (activa en este repositorio)
+```bash
+git clone https://github.com/Yachiga/dataops-comisiones-jenkins.git
+cd dataops-comisiones-jenkins
+```
 
-**Levantar Jenkins con Docker** (PowerShell):
+**Paso 2 – Crear el entorno virtual e instalar dependencias**
 
 ```powershell
-docker run -d --name jenkins-dataops -p 8090:8080 -u root -v jenkins_dataops:/var/jenkins_home jenkins/jenkins:lts-jdk17
-docker exec jenkins-dataops bash -c "apt-get update && apt-get install -y python3 python3-venv python3-pip"
-docker exec jenkins-dataops cat /var/jenkins_home/secrets/initialAdminPassword
+# Windows (PowerShell)
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
 ```
 
-Abrir http://localhost:8090, pegar la clave inicial, instalar los *suggested plugins* y crear el usuario administrador.
+```bash
+# Linux / macOS
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+```
 
-**Configuración:**
+**Paso 3 – Configurar las variables**
 
-1. Credencial (*Manage Jenkins → Credentials → System → Global → Add Credentials*): tipo **Secret text**,
-   ID **`PG_PASSWORD`**, valor = contraseña del usuario de solo lectura `usr_ro_dmc_rrhh_estudiantes`.
-   Para `DESTINO=azure` además: `azure-sp` (Username with password: appId / secret) y `azure-tenant-id` (Secret text).
-2. *New Item → Multibranch Pipeline* → *Branch Sources: Git* →
-   `https://github.com/Yachiga/dataops-comisiones-jenkins.git` → *Script Path* `Jenkinsfile` →
-   *Scan Multibranch Pipeline Triggers*: periódicamente cada 1 minuto.
-3. Parámetro **DESTINO**: `local` (por defecto) ejecuta el pipeline Python contra PostgreSQL y deja
-   `salario_total_202610.parquet` (+ Excel y CSV) validado en `datalake/<entorno>/` como artefacto;
-   `azure` despliega ARM + Data Factory con `scripts/deploy.sh`.
+Copiar `.env.example` a `.env` y completar `PG_PASSWORD` (el archivo `.env` no se versiona). O definirlas en la sesión:
 
-**Etapas:** Preparar entorno Python → CI Lint → CI Pruebas (JUnit, 58 pruebas) → CI Validar ADF/ARM →
-CI Ejecución de prueba → CD dev → CD test → **Aprobación producción** (`input`, solo `main`) → CD prod.
-`develop` despliega a dev y test; `main` además pide aprobación y despliega a prod.
+```powershell
+$env:PG_HOST="mgg.vps.webdock.cloud"; $env:PG_USER="usr_ro_dmc_rrhh_estudiantes"; $env:PG_DATABASE="dmc"
+$env:PG_PASSWORD="<contraseña>"; $env:PYTHONPATH="src"
+```
 
-### 4. Flujo de trabajo Git
+**Paso 4 – Ejecutar las pruebas**
 
-* `main` = producción, `develop` = integración, `feature/*` = cambios.
-* Todo cambio entra por **Pull Request** a `develop`; la release se hace con PR `develop → main` y tag `vX.Y.Z`.
-* Mensajes de commit con prefijos convencionales (`feat:`, `fix:`, `ci:`, `test:`, `docs:`).
-* Si se edita el pipeline en el portal de ADF (modo Git), exportar los JSON a `adf/` y ejecutar
-  `python scripts/build_adf_arm.py` antes de hacer commit; el CI falla si la plantilla no está sincronizada.
+```bash
+python -m pytest            # 58 pruebas; no necesitan la base de datos
+ruff check src tests scripts
+```
+
+**Paso 5 – Ejecutar el pipeline contra la base real**
+
+```bash
+python -m comisiones.pipeline --modo local --entorno dev \
+  --csv data/input/ComisionEmpleados_V1_202610.csv --salida datalake/dev --formatos parquet xlsx csv
+```
+
+**Paso 6 – Validar la salida**
+
+```bash
+python scripts/verify_parquet.py --ruta datalake/dev --csv data/input/ComisionEmpleados_V1_202610.csv
+```
+
+Se generan `salario_total_202610.parquet`, `.xlsx`, `.csv` y `reporte_ejecucion.json`.
+Códigos de salida del pipeline: `0` éxito, `2` validación de calidad fallida, `1` error inesperado.
 
 ---
 
-## Seguridad
+## 6. Paso a paso: despliegue con Jenkins (dev → test → prod)
 
-* Ninguna contraseña se versiona: `PG_PASSWORD` vive en el almacén de credenciales de Jenkins (y en Key Vault en el despliegue a Azure); Jenkins la enmascara en los logs.
-* ADF lee de Key Vault la contraseña de PostgreSQL y la clave del Storage (access policy de su
-  Managed Identity). Con permisos de Owner se puede pasar a roles RBAC y prescindir de la clave.
-* Una prueba (`test_no_hay_secretos_en_el_repositorio`) falla si aparece un secreto en el código.
+### 6.1 Cómo funciona
 
-## Solución de problemas
+```
+feature/*  ──PR──►  develop  ──PR──►  main
+                      │                 │
+                      ▼                 ▼
+               CI → CD dev →     CI → CD dev → CD test → Aprobación → CD prod
+                    CD test
+```
 
-| Síntoma | Causa probable |
+| # | Etapa | Ramas | Qué hace | Si falla |
+|---|---|---|---|---|
+| 1 | Preparar entorno Python | todas | crea `.venv` e instala `requirements-dev.txt` | se detiene |
+| 2 | CI - Lint | todas | `ruff check src tests scripts` | se detiene |
+| 3 | CI - Pruebas | todas | 58 pruebas pytest; publica el reporte JUnit en *Tests* | se detiene |
+| 4 | CI - Validar artefactos ADF / ARM | todas | `build_adf_arm.py --check` | se detiene |
+| 5 | CI - Ejecución de prueba (fixture) | todas | corre el pipeline con datos de prueba; archiva `output/ci/` | se detiene |
+| 6 | CD - dev | develop, main | pipeline contra PostgreSQL → `datalake/dev/` + validación | no despliega test ni prod |
+| 7 | CD - test | develop, main | lo mismo en `datalake/test/` | no despliega prod |
+| 8 | Aprobación producción | main | paso `input` "¿Desplegar a PRODUCCIÓN?" (espera 30 min) | sin aprobación no hay prod |
+| 9 | CD - prod | main | lo mismo en `datalake/prod/` | — |
+
+Parámetros del job:
+
+| Parámetro | Valor por defecto | Descripción |
+|---|---|---|
+| `DESTINO` | `local` | `local` = pipeline Python con Parquet en `datalake/<entorno>/` (artefacto de Jenkins); `azure` = ARM + Data Factory con `scripts/deploy.sh` |
+| `CSV_FILE` | `ComisionEmpleados_V1_202610.csv` | CSV dentro de `data/input/` |
+| `RESOURCE_GROUP` | vacío | solo `azure`: vacío = `rg-dataops-<entorno>` |
+
+### 6.2 Paso 1 – Levantar Jenkins con Docker
+
+En PowerShell (con Docker Desktop abierto):
+
+```powershell
+docker run -d --name jenkins-dataops -p 8090:8080 -u root `
+  -v jenkins_dataops:/var/jenkins_home jenkins/jenkins:lts-jdk17
+```
+
+* `-p 8090:8080`: Jenkins queda en http://localhost:8090.
+* `-v jenkins_dataops:/var/jenkins_home`: la configuración y el historial sobreviven a reinicios.
+
+### 6.3 Paso 2 – Instalar Python dentro del contenedor
+
+```powershell
+docker exec jenkins-dataops bash -c "apt-get update && apt-get install -y python3 python3-venv python3-pip"
+docker exec jenkins-dataops python3 --version      # debe mostrar 3.10 o superior
+```
+
+### 6.4 Paso 3 – Configuración inicial de Jenkins
+
+1. Obtener la clave inicial:
+
+   ```powershell
+   docker exec jenkins-dataops cat /var/jenkins_home/secrets/initialAdminPassword
+   ```
+
+2. Abrir http://localhost:8090 y pegar la clave.
+3. Elegir **Install suggested plugins**. Incluyen *Pipeline*, *Git*, *Credentials Binding*, *JUnit*, *Timestamper* y *Branch API* (Multibranch), que usa el `Jenkinsfile`.
+4. Crear el usuario administrador y confirmar la URL `http://localhost:8090/`.
+
+### 6.5 Paso 4 – Crear la credencial de la base de datos
+
+1. **Manage Jenkins → Credentials → System → Global credentials (unrestricted) → Add Credentials**.
+2. Completar:
+   * **Kind:** `Secret text`
+   * **Secret:** contraseña del usuario `usr_ro_dmc_rrhh_estudiantes`
+   * **ID:** `PG_PASSWORD` (debe ser exactamente este, porque el `Jenkinsfile` lo busca por ese ID)
+   * **Description:** `Contraseña PostgreSQL dmc`
+3. **Create**.
+
+Solo para `DESTINO=azure` hacen falta dos credenciales más:
+
+| ID | Tipo | Valor |
+|---|---|---|
+| `azure-sp` | Username with password | usuario = `appId` del Service Principal, contraseña = su secreto |
+| `azure-tenant-id` | Secret text | ID del tenant de Azure |
+
+### 6.6 Paso 5 – Crear el job Multibranch Pipeline
+
+1. **Dashboard → New Item**, nombre `dataops-comisiones`, tipo **Multibranch Pipeline** → **OK**.
+2. **Branch Sources → Add source → Git**:
+   * **Project Repository:** `https://github.com/Yachiga/dataops-comisiones-jenkins.git`
+   * **Credentials:** ninguna (el repositorio es público).
+3. **Build Configuration:** *by Jenkinsfile*, **Script Path** `Jenkinsfile`.
+4. **Scan Multibranch Pipeline Triggers:** marcar *Periodically if not otherwise run* → **Interval** `1 minute`.
+5. **Save**. Jenkins escanea el repositorio y crea un job por rama (`develop` y `main`).
+
+### 6.7 Paso 6 – Ejecutar el CI/CD
+
+* **Automático:** cada push a `develop` o `main` se detecta en un máximo de 1 minuto y se lanza el build.
+* **Manual:** abrir la rama → **Build with Parameters** → `DESTINO = local` → **Build**.
+
+> La primera ejecución de cada rama solo registra los parámetros. Si aparece solo **Build Now**, ejecutarla una vez; luego aparece **Build with Parameters**.
+
+### 6.8 Paso 7 – Aprobar el paso a producción (rama main)
+
+Cuando el build de `main` llega a **Aprobación producción** queda en pausa:
+
+1. Abrir el build (por ejemplo `main #5`) → etapa **Aprobación producción**.
+2. Revisar los logs de **CD - dev** y **CD - test**.
+3. Pulsar **Desplegar**. Jenkins registra el aprobador ("Approved by …").
+4. Si nadie aprueba en 30 minutos, el build termina como **ABORTED** y producción no se despliega.
+
+### 6.9 Paso 8 – Verificar el despliegue en cada entorno
+
+| Qué revisar | Dónde | Resultado esperado |
+|---|---|---|
+| Estado del build | página del job / vista *Stages* | todas las etapas en verde, `SUCCESS` |
+| Log de cada entorno | etapa **CD - dev / test / prod** → log | `Empleados extraídos de PostgreSQL: 48 filas`, `"estado": "Succeeded"`, `OK: Parquet validado` |
+| Pruebas | pestaña **Tests** | 58 aprobadas, 0 fallidas |
+| Archivos generados | **Artifacts** | `datalake/dev/`, `datalake/test/`, `datalake/prod/` con `salario_total_202610.parquet`, `.xlsx`, `.csv` y `reporte_ejecucion.json` |
+| Aprobación | etapa **Aprobación producción** | "Approved by <usuario>" |
+
+### 6.10 Comandos útiles del contenedor
+
+```powershell
+docker stop jenkins-dataops      # detener
+docker start jenkins-dataops     # volver a iniciar (conserva la configuración)
+docker logs -f jenkins-dataops   # ver el log de Jenkins
+```
+
+---
+
+## 7. Paso a paso: despliegue en Azure (ARM + Data Factory)
+
+Toda la lógica está en `scripts/deploy.sh <dev|test|prod>`. La usan Jenkins (`DESTINO=azure`), Azure DevOps y GitHub Actions, y también puede ejecutarse a mano.
+
+### 7.1 Qué hace `deploy.sh`
+
+| Paso | Acción |
 |---|---|
-| `Copiar_Empleados_PostgreSQL` falla por timeout | El servidor PostgreSQL no admite la IP del Azure IR: usar un Self-hosted IR o pedir apertura de firewall |
-| Data Flow con columnas nulas | Tipos de la tabla distintos a la proyección: en ADF Studio → *Import projection* en `srcEmpleado` y volver a exportar |
-| `AuthorizationFailed` al desplegar | La cuenta o service connection no tiene *Contributor* sobre el grupo de recursos |
-| `az group create` rechazado | La cuenta del curso no puede crear grupos: usar `RESOURCE_GROUP` con el grupo asignado |
-| CI falla en `build_adf_arm.py --check` | Se cambió `adf/` sin regenerar `infra/arm/adf-content.json` |
+| 1/7 | Crea o reutiliza el grupo de recursos (`RESOURCE_GROUP` o `rg-dataops-<entorno>`) |
+| 2/7 | Despliega `infra/arm/infra.json` con `parameters/infra.<entorno>.parameters.json`: Storage ADLS Gen2 (contenedores `raw`, `staging`, `curated`), Key Vault con los secretos y Data Factory con Managed Identity |
+| 3/7 | Detiene el trigger para actualizar sin ejecuciones en curso |
+| 4/7 | Despliega `infra/arm/adf-content.json`: linked services, datasets, data flow, pipeline y trigger |
+| 5/7 | Sube el CSV a `raw/comisiones/` |
+| 6/7 | Prueba de humo: ejecuta `pl_comisiones_salario_total` y espera `Succeeded` (`smoke_test_adf.sh`); valida el Parquet en `curated` (`verify_parquet.py`) |
+| 7/7 | Activa el trigger (en test queda detenido) |
+
+Los nombres de los recursos incluyen el entorno: `stdataops<entorno>…`, `kv-dataops-<entorno>-…`, `adf-dataops-<entorno>-…`. La plantilla no crea asignaciones de roles, así que basta el rol **Contributor**.
+
+### 7.2 Paso 1 – Preparar Azure (una vez)
+
+```bash
+az login
+az account show -o table                                   # confirmar la suscripción
+az provider register --namespace Microsoft.DataFactory
+az provider register --namespace Microsoft.EventGrid       # para el trigger de eventos
+```
+
+### 7.3 Paso 2 – Despliegue manual de un entorno
+
+```bash
+export PG_PASSWORD='<contraseña>'                 # nunca en el repositorio
+export RESOURCE_GROUP='<grupo asignado>'          # opcional
+bash scripts/deploy.sh dev                        # luego test y prod
+```
+
+### 7.4 Paso 3 – Despliegue desde Jenkins
+
+1. Crear un Service Principal con rol Contributor sobre el grupo de recursos:
+
+   ```bash
+   az ad sp create-for-rbac --name sp-dataops-jenkins --role Contributor \
+     --scopes /subscriptions/<subscription-id>/resourceGroups/<grupo>
+   ```
+
+2. Registrar `azure-sp` y `azure-tenant-id` en Jenkins (ver 6.5).
+3. Instalar Azure CLI en el contenedor:
+
+   ```powershell
+   docker exec jenkins-dataops bash -c "curl -sL https://aka.ms/InstallAzureCLIDeb | bash"
+   ```
+
+4. **Build with Parameters** → `DESTINO = azure` (y `RESOURCE_GROUP` si aplica).
+
+### 7.5 Verificación en Azure
+
+* **ADF Studio → Monitor → Pipeline runs:** `pl_comisiones_salario_total` en estado *Succeeded*.
+* **Storage → contenedor `curated` → `comisiones/salario_total/periodo=202610/`:** archivo Parquet.
+
+---
+
+## 8. Otras herramientas de CI/CD incluidas
+
+Las tres herramientas llaman al mismo `scripts/deploy.sh`, así que el despliegue es idéntico.
+
+* **Azure DevOps** (`azure-pipelines.yml` + `cicd/templates/deploy-env.yml`): etapas CI → CD_DEV → CD_TEST → CD_PROD. Requiere la service connection `sc-dataops-comisiones`, el variable group `vg-dataops-comisiones` (`PG_PASSWORD` secreta) y los environments `dataops-dev`, `dataops-test` y `dataops-prod` (este último con aprobación y *Branch control* a `main`).
+* **GitHub Actions** (`.github/workflows/ci-cd.yml` + `deploy.yml`): desactivado en este repositorio. Está activo en la versión https://github.com/Yachiga/dataops-comisiones.
+
+---
+
+## 9. Flujo de trabajo Git
+
+* `main` = producción, `develop` = integración, `feature/*` = cambios.
+* Todo cambio entra por **Pull Request** a `develop`. Jenkins lo valida en dev y test, y luego se integra con PR `develop → main` y una etiqueta `vX.Y.Z` (versión actual: **v2.0.0**).
+* Commits con prefijos convencionales: `feat:`, `fix:`, `ci:`, `test:`, `docs:`.
+* Si se edita el pipeline en ADF Studio (modo Git), exportar los JSON a `adf/` y ejecutar `python scripts/build_adf_arm.py` antes del commit. Si no, el CI falla.
+
+---
+
+## 10. Resultados esperados y verificación
+
+Con el periodo 202610 y la base real, los tres entornos producen:
+
+| Indicador | Valor |
+|---|---|
+| Empleados extraídos de PostgreSQL | 48 |
+| Filas del CSV | 34 |
+| Empleados con comisión | 33 |
+| Empleados sin comisión | 15 (`salario_total = mnt_salario`) |
+| Comisión del CSV sin empleado | `empleado_id` 4 (reportado, no se carga) |
+| Comisiones sobre el tope | 13 (marcadas en `supera_tope_comision`) |
+| Σ salario | 138,043.40 |
+| Σ comisión aplicada | 342,000.00 |
+| Σ salario_total | 480,043.40 |
+
+`verify_parquet.py` comprueba que `salario_total = mnt_salario + mnt_comision` en todas las filas, que no haya `empleado_id` duplicados y que la comisión aplicada no supere la del CSV.
+
+---
+
+## 11. Seguridad
+
+* Ninguna contraseña está en el repositorio. `PG_PASSWORD` vive en el almacén de credenciales de Jenkins (y en Key Vault en Azure), y Jenkins la enmascara en los logs (`****`).
+* `.env` está en `.gitignore`; solo se versiona `.env.example` sin valores.
+* `config.py` oculta la contraseña al imprimir la configuración.
+* La prueba `test_no_hay_secretos_en_el_repositorio` falla si aparece un secreto en el código.
+* Data Factory lee de Key Vault la contraseña de PostgreSQL y la clave del Storage mediante su Managed Identity.
+
+---
+
+## 12. Solución de problemas
+
+| Síntoma | Causa | Solución |
+|---|---|---|
+| `python3: not found` en *Preparar entorno Python* | Python no está instalado en el contenedor | Ejecutar el paso 6.3 |
+| `Falta la variable de entorno obligatoria: PG_PASSWORD` o error de autenticación en CD - dev | La credencial no existe o su ID es distinto | Crear la credencial con ID exacto `PG_PASSWORD` (6.5) |
+| `Could not find credentials entry with ID 'azure-sp'` | El build tomó `DESTINO=azure` de una ejecución anterior | **Build with Parameters** con `DESTINO = local`, o crear las credenciales de Azure |
+| Build `ABORTED` en *Aprobación producción* | Nadie aprobó en 30 minutos | Volver a ejecutar y aprobar a tiempo |
+| No aparece **Build with Parameters** | Primera ejecución de la rama | Ejecutar **Build Now** una vez |
+| Jenkins no detecta los cambios | El escaneo periódico no está activo | Activar el intervalo de 1 minuto (6.6) o pulsar **Scan Multibranch Pipeline Now** |
+| CI falla en `build_adf_arm.py --check` | Se cambió `adf/` sin regenerar la plantilla | `python scripts/build_adf_arm.py` y commit |
+| `AuthorizationFailed` o "No subscriptions found" en Azure | La cuenta no tiene acceso a la suscripción o el rol Contributor | Pedir acceso al administrador; mientras tanto usar `DESTINO=local` |
+| `Copiar_Empleados_PostgreSQL` falla por timeout en ADF | El servidor PostgreSQL no admite la IP del Azure IR | Usar un Self-hosted IR o pedir apertura del firewall |
