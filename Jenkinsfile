@@ -3,7 +3,7 @@
 //
 // Requisitos en el agente: python3 (>=3.10) con venv, git y, para DESTINO=azure, Azure CLI.
 // Credenciales en Jenkins (Manage Jenkins > Credentials):
-//   pg-password          (Secret text)  contraseña del usuario PostgreSQL de solo lectura
+//   PG_PASSWORD          (Secret text)  contraseña del usuario PostgreSQL de solo lectura
 //   azure-sp             (Username with password) appId / secret del Service Principal  [solo DESTINO=azure]
 //   azure-tenant-id      (Secret text)                                                   [solo DESTINO=azure]
 //
@@ -112,7 +112,7 @@ pipeline {
 def desplegar(String entorno) {
     if ((params.DESTINO ?: 'local') == 'azure') {
         withCredentials([
-            string(credentialsId: 'pg-password', variable: 'PG_PASSWORD'),
+            string(credentialsId: 'PG_PASSWORD', variable: 'PG_PASSWORD'),
             usernamePassword(credentialsId: 'azure-sp', usernameVariable: 'AZ_CLIENT_ID', passwordVariable: 'AZ_CLIENT_SECRET'),
             string(credentialsId: 'azure-tenant-id', variable: 'AZ_TENANT_ID')
         ]) {
@@ -125,7 +125,7 @@ def desplegar(String entorno) {
             }
         }
     } else {
-        withCredentials([string(credentialsId: 'pg-password', variable: 'PG_PASSWORD')]) {
+        withCredentials([string(credentialsId: 'PG_PASSWORD', variable: 'PG_PASSWORD')]) {
             sh """
                 . "\$VENV/bin/activate"
                 export PG_HOST=mgg.vps.webdock.cloud PG_USER=usr_ro_dmc_rrhh_estudiantes PG_DATABASE=dmc
