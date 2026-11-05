@@ -74,7 +74,7 @@ def test_marca_comision_sobre_tope(empleados, comisiones_reales):
 
 
 def test_totales_cuadran(empleados, comisiones_reales):
-    df, rep = transform.calcular_salario_total(empleados, comisiones_reales)
+    _, rep = transform.calcular_salario_total(empleados, comisiones_reales)
     assert rep.total_salario_total == pytest.approx(rep.total_salario + rep.total_comision)
     assert rep.total_comision == pytest.approx(354_000)
 
