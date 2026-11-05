@@ -15,7 +15,7 @@ pipeline {
     agent any
 
     parameters {
-        choice(name: 'DESTINO', choices: ['azure', 'local'], description: 'Dónde desplegar')
+        choice(name: 'DESTINO', choices: ['local', 'azure'], description: 'local = PostgreSQL real -> Parquet en datalake/<entorno>; azure = ARM + Data Factory')
         string(name: 'CSV_FILE', defaultValue: 'ComisionEmpleados_V1_202610.csv', description: 'CSV en data/input/')
         string(name: 'RESOURCE_GROUP', defaultValue: '', description: 'Vacío = rg-dataops-<entorno>; o un único grupo para los tres entornos')
     }
@@ -70,7 +70,7 @@ pipeline {
                     . "$VENV/bin/activate"
                     python -m comisiones.pipeline --modo local --entorno dev \
                         --empleados-file tests/fixtures/empleados_fixture.csv \
-                        --csv "data/input/${CSV_FILE}" --salida output/ci
+                        --csv "data/input/${CSV_FILE:-ComisionEmpleados_V1_202610.csv}" --salida output/ci
                 '''
                 archiveArtifacts artifacts: 'output/ci/**', fingerprint: true
             }
@@ -103,14 +103,14 @@ pipeline {
     }
 
     post {
-        success { echo "Pipeline OK - rama ${env.BRANCH_NAME ?: 'local'} - destino ${params.DESTINO}" }
+        success { echo "Pipeline OK - rama ${env.BRANCH_NAME ?: 'local'} - destino ${params.DESTINO ?: 'local'}" }
         failure { echo 'Pipeline con errores: revisar la etapa marcada en rojo' }
     }
 }
 
 // -----------------------------------------------------------------------------
 def desplegar(String entorno) {
-    if (params.DESTINO == 'azure') {
+    if ((params.DESTINO ?: 'local') == 'azure') {
         withCredentials([
             string(credentialsId: 'pg-password', variable: 'PG_PASSWORD'),
             usernamePassword(credentialsId: 'azure-sp', usernameVariable: 'AZ_CLIENT_ID', passwordVariable: 'AZ_CLIENT_SECRET'),
@@ -130,8 +130,10 @@ def desplegar(String entorno) {
                 . "\$VENV/bin/activate"
                 export PG_HOST=mgg.vps.webdock.cloud PG_USER=usr_ro_dmc_rrhh_estudiantes PG_DATABASE=dmc
                 python -m comisiones.pipeline --modo local --entorno ${entorno} \
-                    --csv "data/input/${params.CSV_FILE}" --salida datalake/${entorno} \
-                    --formatos parquet xlsx
+                    --csv "data/input/${params.CSV_FILE ?: 'ComisionEmpleados_V1_202610.csv'}" --salida datalake/${entorno} \
+                    --formatos parquet xlsx csv
+                python scripts/verify_parquet.py --ruta datalake/${entorno} \
+                    --csv "data/input/${params.CSV_FILE ?: 'ComisionEmpleados_V1_202610.csv'}" --entorno ${entorno}
             """
         }
         archiveArtifacts artifacts: "datalake/${entorno}/**", fingerprint: true
