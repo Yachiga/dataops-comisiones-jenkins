@@ -1,6 +1,7 @@
 """Descarga el Parquet de curated y verifica reglas básicas (usado en CD)."""
 import argparse
 import io
+import os
 import sys
 
 import pandas as pd
@@ -13,7 +14,8 @@ ap.add_argument("--periodo", required=True)
 ap.add_argument("--csv", required=True, help="CSV original para cuadrar el total de comisiones")
 a = ap.parse_args()
 
-svc = DataLakeServiceClient(f"https://{a.account}.dfs.core.windows.net", credential=DefaultAzureCredential())
+credencial = os.getenv("AZURE_STORAGE_KEY") or DefaultAzureCredential()
+svc = DataLakeServiceClient(f"https://{a.account}.dfs.core.windows.net", credential=credencial)
 fs = svc.get_file_system_client("curated")
 carpeta = f"comisiones/salario_total/periodo={a.periodo}"
 archivos = [p.name for p in fs.get_paths(carpeta) if p.name.endswith(".parquet")]

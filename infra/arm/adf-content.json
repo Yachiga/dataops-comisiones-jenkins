@@ -23,7 +23,11 @@
       "type": "string"
     },
     "blobEndpoint": {
-      "type": "string"
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "No se usa desde v1.1 (el Blob usa cadena de conexión en Key Vault); se conserva por compatibilidad"
+      }
     },
     "dfsEndpoint": {
       "type": "string"
@@ -51,15 +55,25 @@
       "apiVersion": "2018-06-01",
       "properties": {
         "type": "AzureBlobFS",
-        "description": "Azure Data Lake Storage Gen2 (staging y curated). Autenticación con Managed Identity del Data Factory.",
+        "description": "Azure Data Lake Storage Gen2 (staging y curated). Clave de la cuenta guardada en Key Vault.",
         "annotations": [
           "dataops-comisiones"
         ],
         "typeProperties": {
-          "url": "[parameters('dfsEndpoint')]"
+          "url": "[parameters('dfsEndpoint')]",
+          "accountKey": {
+            "type": "AzureKeyVaultSecret",
+            "store": {
+              "referenceName": "ls_keyvault",
+              "type": "LinkedServiceReference"
+            },
+            "secretName": "storage-account-key"
+          }
         }
       },
-      "dependsOn": []
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls_keyvault')]"
+      ]
     },
     {
       "name": "[concat(parameters('factoryName'), '/ls_blob_raw')]",
@@ -67,16 +81,24 @@
       "apiVersion": "2018-06-01",
       "properties": {
         "type": "AzureBlobStorage",
-        "description": "Blob Storage donde se deposita el CSV de comisiones (contenedor raw). Autenticación con Managed Identity del Data Factory.",
+        "description": "Blob Storage donde se deposita el CSV de comisiones (contenedor raw). Cadena de conexión guardada en Key Vault.",
         "annotations": [
           "dataops-comisiones"
         ],
         "typeProperties": {
-          "serviceEndpoint": "[parameters('blobEndpoint')]",
-          "accountKind": "StorageV2"
+          "connectionString": {
+            "type": "AzureKeyVaultSecret",
+            "store": {
+              "referenceName": "ls_keyvault",
+              "type": "LinkedServiceReference"
+            },
+            "secretName": "storage-connection-string"
+          }
         }
       },
-      "dependsOn": []
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', parameters('factoryName'), 'ls_keyvault')]"
+      ]
     },
     {
       "name": "[concat(parameters('factoryName'), '/ls_keyvault')]",

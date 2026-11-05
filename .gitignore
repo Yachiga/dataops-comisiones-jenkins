@@ -8,3 +8,4 @@ reports/
 .coverage
 *.parquet
 !tests/fixtures/*.parquet
+datalake/
