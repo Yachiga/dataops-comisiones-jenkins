@@ -106,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     except transform.ErrorCalidadDatos as exc:
         log.error("Validación de calidad fallida: %s", exc)
         return 2
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.exception("El pipeline terminó con error")
         return 1
 

@@ -9,7 +9,7 @@ import pytest
 
 RAIZ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAIZ / "scripts"))
-import build_adf_arm  # noqa: E402
+import build_adf_arm
 
 JSONS = sorted(list((RAIZ / "adf").rglob("*.json")) + list((RAIZ / "infra").rglob("*.json")))
 
@@ -29,7 +29,7 @@ def test_referencias_adf_resueltas():
 
 
 def test_plantilla_arm_versionada_esta_al_dia():
-    r = subprocess.run([sys.executable, str(RAIZ / "scripts/build_adf_arm.py"), "--check"], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, str(RAIZ / "scripts/build_adf_arm.py"), "--check"], capture_output=True, text=True, check=False)
     assert r.returncode == 0, r.stdout + r.stderr
 
 
@@ -72,7 +72,7 @@ def test_parametros_por_entorno_existen():
         assert "pgPassword" not in p["parameters"], "La contraseña se inyecta desde el pipeline, no desde el archivo"
 
 
-@pytest.mark.parametrize("ruta", ["azure-pipelines.yml", "cicd/templates/deploy-env.yml", ".github/workflows/ci-cd.yml"])
+@pytest.mark.parametrize("ruta", ["azure-pipelines.yml", "cicd/templates/deploy-env.yml", ".github/workflows/ci-cd.yml", ".github/workflows/deploy.yml"])
 def test_yaml_cicd_valido(ruta):
     yaml = pytest.importorskip("yaml")
     doc = yaml.safe_load((RAIZ / ruta).read_text(encoding="utf-8"))
@@ -104,7 +104,7 @@ def test_linked_services_leen_secretos_de_key_vault():
 
 @pytest.mark.parametrize("script", ["scripts/deploy.sh", "scripts/smoke_test_adf.sh", "scripts/publicar_github.sh"])
 def test_scripts_bash_sintaxis(script):
-    r = subprocess.run(["bash", "-n", str(RAIZ / script)], capture_output=True, text=True)
+    r = subprocess.run(["bash", "-n", str(RAIZ / script)], capture_output=True, text=True, check=False)
     assert r.returncode == 0, r.stderr
 
 
@@ -117,5 +117,5 @@ def test_jenkinsfile_cubre_ci_y_tres_entornos_con_aprobacion():
 
 
 def test_ci_cd_reutilizan_deploy_sh():
-    for ruta in ("cicd/templates/deploy-env.yml", "Jenkinsfile", ".github/workflows/ci-cd.yml"):
+    for ruta in ("cicd/templates/deploy-env.yml", "Jenkinsfile", ".github/workflows/deploy.yml"):
         assert "deploy.sh" in (RAIZ / ruta).read_text(encoding="utf-8"), ruta
