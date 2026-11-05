@@ -1,1 +1,2 @@
 v1.0.0          Primera versión: pipeline de comisiones + CI/CD
+v1.1.0          Jenkinsfile, deploy.sh, plantilla sin RBAC
