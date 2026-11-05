@@ -31,7 +31,7 @@ Blob raw/comisiones/ComisionEmpleados_V1_AAAAMM.csv ──Validation────
 ```
 
 * **Linked services:** `ls_postgres_dmc` (PostgreSQL V2, contraseña en Key Vault), `ls_blob_raw`
-  (Blob, Managed Identity), `ls_adls_datalake` (ADLS Gen2, Managed Identity), `ls_keyvault`.
+  (Blob) y `ls_adls_datalake` (ADLS Gen2) con la clave del Storage guardada en Key Vault, `ls_keyvault`.
 * **Pipeline `pl_comisiones_salario_total`:** `Validar_CSV_Comisiones` + `Copiar_Empleados_PostgreSQL`
   → `Join_Calcular_Salario_Total` (Data Flow) → `Fallo_Pipeline` si algo falla.
 * **Trigger `tr_blob_nuevo_csv_comisiones`:** se dispara al llegar un nuevo CSV a `raw/comisiones/`.
@@ -61,18 +61,21 @@ supera_tope_comision, periodo, entorno, fecha_proceso`
 ├── adf/                      # Artefactos ADF (formato Git de Data Factory) – fuente única de verdad
 │   ├── linkedService/  dataset/  dataflow/  pipeline/  trigger/
 ├── infra/arm/
-│   ├── infra.json            # Storage ADLS Gen2 + contenedores + Key Vault + Data Factory + RBAC
+│   ├── infra.json            # Storage ADLS Gen2 + contenedores + Key Vault (secretos) + Data Factory
 │   ├── adf-content.json      # Generado desde adf/ por scripts/build_adf_arm.py
 │   └── parameters/infra.{dev,test,prod}.parameters.json
 ├── src/comisiones/           # Pipeline Python (config, extract, transform, load, pipeline)
 ├── tests/                    # pytest: transformación, flujo completo, artefactos ADF/ARM, secretos
 ├── scripts/
 │   ├── build_adf_arm.py      # adf/ -> ARM parametrizado por entorno (--check en CI)
+│   ├── deploy.sh             # despliegue completo de un entorno (lo usan todos los CI/CD)
+│   ├── publicar_github.sh    # sube ramas y etiquetas a GitHub
 │   ├── smoke_test_adf.sh     # lanza el pipeline ADF y espera "Succeeded"
 │   └── verify_parquet.py     # valida el Parquet escrito en curated
 ├── azure-pipelines.yml       # CI + CD dev/test/prod (Azure DevOps)
 ├── cicd/templates/deploy-env.yml
-├── .github/workflows/ci-cd.yml  # alternativa GitHub Actions
+├── Jenkinsfile               # CI + CD dev/test/prod (Jenkins)
+├── .github/workflows/ci-cd.yml  # alternativa GitHub Actions (opcional)
 ├── data/input/ComisionEmpleados_V1_202610.csv
 └── sql/extract_empleado.sql
 ```
@@ -103,39 +106,84 @@ Códigos de salida: `0` éxito, `2` validación de calidad fallida, `1` error in
 
 ---
 
-## Despliegue en Azure con Azure DevOps
+## Publicar el repositorio en GitHub
+
+1. Crear el repositorio **vacío** `dataops-comisiones` en https://github.com/new con la cuenta `yachiga`
+   (sin README ni .gitignore).
+2. Crear un *Personal Access Token* (Settings → Developer settings → Tokens, permiso `repo`): GitHub
+   lo pide como contraseña al hacer `git push`.
+3. Desde la carpeta del proyecto:
+
+```bash
+bash scripts/publicar_github.sh yachiga dataops-comisiones   # sube main, develop y las etiquetas
+```
+
+---
+
+## Despliegue en Azure
+
+Toda la lógica de despliegue está en **`scripts/deploy.sh <dev|test|prod>`**: ARM de
+infraestructura → detener trigger → ARM del contenido ADF → subir CSV → ejecutar el pipeline ADF
+(prueba de humo) → validar el Parquet → activar trigger. Lo llaman Azure DevOps, Jenkins y GitHub
+Actions, y también se puede ejecutar a mano.
+
+La plantilla **no crea asignaciones de roles**: basta el rol *Contributor* (cuentas de laboratorio).
+ADF lee la contraseña de PostgreSQL y la clave del Storage desde Key Vault mediante una *access
+policy* de su Managed Identity.
 
 ### 1. Preparar Azure (una vez)
 
 ```bash
-az login
+az login                                                     # abre el navegador (admite MFA)
+az account show -o table                                     # confirmar la suscripción del curso
 az provider register --namespace Microsoft.DataFactory
 az provider register --namespace Microsoft.EventGrid        # para el trigger de eventos
 ```
 
-### 2. Preparar Azure DevOps (una vez)
+### 2. Despliegue manual (sin herramienta de CI/CD)
 
-1. **Repos:** crear el repositorio e importar este código (`git remote add origin … && git push -u origin --all`).
+```bash
+export PG_PASSWORD='<contraseña de usr_ro_dmc_rrhh_estudiantes>'
+export RESOURCE_GROUP='<grupo asignado por el curso>'        # opcional; por defecto rg-dataops-<entorno>
+bash scripts/deploy.sh dev
+```
+
+### 3. Opción A – Azure DevOps
+
+1. Crear un proyecto en https://dev.azure.com.
 2. **Service connection** (*Project settings → Service connections → Azure Resource Manager →
-   Workload Identity federation*), nombre **`sc-dataops-comisiones`**, con rol *Owner* o
-   *Contributor + User Access Administrator* sobre la suscripción (las plantillas crean asignaciones RBAC).
-3. **Variable group** **`vg-dataops-comisiones`** (*Pipelines → Library*):
-   * `PG_PASSWORD` (secreta) – contraseña del usuario de solo lectura.
-   * `AZURE_SUBSCRIPTION_ID`.
+   Workload Identity federation (automatic)*), nombre **`sc-dataops-comisiones`**, con alcance al
+   grupo de recursos o a la suscripción. Si la cuenta del curso no puede crear app registrations,
+   pedir al docente un Service Principal y usar *Service principal (manual)*.
+3. **Variable group** **`vg-dataops-comisiones`** (*Pipelines → Library*): `PG_PASSWORD` (secreta) y
+   `AZURE_SUBSCRIPTION_ID`. Si solo hay un grupo de recursos, editar `resourceGroup_dev/test/prod`
+   en `azure-pipelines.yml` con ese nombre.
 4. **Environments** (*Pipelines → Environments*): `dataops-dev`, `dataops-test`, `dataops-prod`.
    En `dataops-prod` → *Approvals and checks*: **Branch control** (solo `refs/heads/main`) y
-   **Approvals** (aprobador) o una comprobación automática (*Business hours* / *Invoke REST API*).
-5. **Pipelines → New pipeline → Azure Repos Git → Existing YAML** → `/azure-pipelines.yml`.
-6. Opcional: **Branch policy** en `main` exigiendo que el pipeline pase en el Pull Request.
-
-### 3. Flujo CI/CD
+   **Approvals** o una comprobación automática (*Business hours* / *Invoke REST API*).
+5. **Pipelines → New pipeline → GitHub → yachiga/dataops-comisiones → Existing YAML** →
+   `/azure-pipelines.yml`.
 
 | Etapa | Cuándo | Qué hace |
 |---|---|---|
 | **CI** | todo push y PR a `main`/`develop` | ruff, pytest (JUnit + cobertura), ejecución de prueba del pipeline Python, `build_adf_arm.py --check`, `az deployment group validate`, publica artefacto `drop` |
-| **CD_DEV** | push a `develop` o `main` | ARM infra → detiene trigger → ARM contenido ADF → sube CSV → ejecuta pipeline ADF (prueba de humo) → valida Parquet → activa trigger |
-| **CD_TEST** | tras CD_DEV | igual que DEV en `rg-dataops-test` (trigger queda detenido) |
-| **CD_PROD** | solo rama `main`, tras CD_TEST y los checks del environment | igual en `rg-dataops-prod` |
+| **CD_DEV** | push a `develop` o `main` | `scripts/deploy.sh dev` |
+| **CD_TEST** | tras CD_DEV | `scripts/deploy.sh test` (trigger queda detenido) |
+| **CD_PROD** | solo rama `main`, tras CD_TEST y los checks del environment | `scripts/deploy.sh prod` |
+
+### 4. Opción B – Jenkins
+
+1. Jenkins con los plugins *Pipeline*, *Git*, *GitHub Branch Source*, *Credentials Binding* y *JUnit*;
+   el agente necesita `python3`, `git` y Azure CLI.
+2. Credenciales (*Manage Jenkins → Credentials*): `pg-password` (Secret text) y, para desplegar en
+   Azure, `azure-sp` (Username with password: appId / secret) y `azure-tenant-id` (Secret text).
+3. *New Item → Multibranch Pipeline* → fuente GitHub `https://github.com/yachiga/dataops-comisiones.git`
+   → *Script Path* `Jenkinsfile`.
+4. Parámetro **DESTINO**: `azure` (despliega con `deploy.sh`) o `local` (ejecuta el pipeline Python
+   contra PostgreSQL y deja el Parquet en `datalake/<entorno>/`, sin Azure).
+
+Etapas: Preparar entorno → CI Lint → CI Pruebas (JUnit) → CI Validar ADF/ARM → CI Ejecución de
+prueba → CD dev → CD test → **Aprobación producción** (`input`, solo `main`) → CD prod.
 
 ### 4. Flujo de trabajo Git
 
@@ -150,8 +198,8 @@ az provider register --namespace Microsoft.EventGrid        # para el trigger de
 ## Seguridad
 
 * Ninguna contraseña se versiona: `PG_PASSWORD` vive en el variable group (secreto) y en Key Vault.
-* ADF accede a Storage y Key Vault con **Managed Identity** (roles *Storage Blob Data Contributor*
-  y *Key Vault Secrets User* asignados por la plantilla).
+* ADF lee de Key Vault la contraseña de PostgreSQL y la clave del Storage (access policy de su
+  Managed Identity). Con permisos de Owner se puede pasar a roles RBAC y prescindir de la clave.
 * Una prueba (`test_no_hay_secretos_en_el_repositorio`) falla si aparece un secreto en el código.
 
 ## Solución de problemas
@@ -160,5 +208,6 @@ az provider register --namespace Microsoft.EventGrid        # para el trigger de
 |---|---|
 | `Copiar_Empleados_PostgreSQL` falla por timeout | El servidor PostgreSQL no admite la IP del Azure IR: usar un Self-hosted IR o pedir apertura de firewall |
 | Data Flow con columnas nulas | Tipos de la tabla distintos a la proyección: en ADF Studio → *Import projection* en `srcEmpleado` y volver a exportar |
-| `AuthorizationFailed` al desplegar | La service connection no tiene permiso para crear *role assignments* |
+| `AuthorizationFailed` al desplegar | La cuenta o service connection no tiene *Contributor* sobre el grupo de recursos |
+| `az group create` rechazado | La cuenta del curso no puede crear grupos: usar `RESOURCE_GROUP` con el grupo asignado |
 | CI falla en `build_adf_arm.py --check` | Se cambió `adf/` sin regenerar `infra/arm/adf-content.json` |

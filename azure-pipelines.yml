@@ -5,6 +5,7 @@
 #   CD_TEST : despliegue a pruebas + prueba de humo + validación del Parquet
 #   CD_PROD : despliegue a producción (solo rama main, con checks del environment)
 # =============================================================================
+# Repositorio de origen: GitHub (yachiga/dataops-comisiones) o Azure Repos.
 trigger:
   branches:
     include: [main, develop]
@@ -27,6 +28,14 @@ variables:
     value: 'ComisionEmpleados_V1_202610.csv'
   - name: periodo
     value: '202610'
+  # Grupos de recursos por entorno. Con una cuenta de laboratorio que solo tiene
+  # un grupo asignado, ponga el mismo nombre en los tres.
+  - name: resourceGroup_dev
+    value: 'rg-dataops-dev'
+  - name: resourceGroup_test
+    value: 'rg-dataops-test'
+  - name: resourceGroup_prod
+    value: 'rg-dataops-prod'
 
 stages:
   # ---------------------------------------------------------------------------
@@ -79,11 +88,13 @@ stages:
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
-                az group create -n rg-dataops-dev -l $(location) -o none
-                az deployment group validate -g rg-dataops-dev \
+                az group show -n $(resourceGroup_dev) -o none 2>/dev/null || az group create -n $(resourceGroup_dev) -l $(location) -o none
+                az deployment group validate -g $(resourceGroup_dev) \
                   --template-file infra/arm/infra.json \
                   --parameters @infra/arm/parameters/infra.dev.parameters.json \
-                  --parameters pgPassword='$(PG_PASSWORD)' -o table
+                  --parameters pgPassword="$PG_PASSWORD" -o table
+            env:
+              PG_PASSWORD: $(PG_PASSWORD)
           - task: CopyFiles@2
             inputs:
               Contents: |
