@@ -56,7 +56,7 @@ def test_config_rechaza_entorno_invalido():
 def test_config_exige_credenciales_postgres(monkeypatch):
     for var in ("PG_HOST", "PG_USER", "PG_PASSWORD"):
         monkeypatch.delenv(var, raising=False)
-    with pytest.raises(EnvironmentError, match="PG_HOST"):
+    with pytest.raises(OSError, match="PG_HOST"):
         cargar_config("dev", requiere_postgres=True)
 
 
