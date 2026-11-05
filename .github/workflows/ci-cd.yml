@@ -1,6 +1,14 @@
-# Alternativa en GitHub Actions. El enunciado pide Azure DevOps o Jenkins; este flujo es opcional.
-# Requiere secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, PG_PASSWORD
-# y los environments dev / test / prod (prod con "Required reviewers" o "Wait timer").
+# =============================================================================
+# CI/CD en GitHub Actions (repositorio Yachiga/dataops-comisiones)
+#   CI      : lint, pruebas (JUnit + cobertura), validación ADF/ARM, ejecución de prueba
+#   CD dev  : push a develop o main
+#   CD test : tras dev
+#   CD prod : solo main, con aprobación del environment "prod" (Required reviewers)
+# El despliegue está en .github/workflows/deploy.yml. Variable de repositorio
+# DESTINO = local (por defecto: pipeline Python contra PostgreSQL real, Parquet
+# publicado como artefacto "datalake-<entorno>") o azure (scripts/deploy.sh).
+# Equivalentes para Azure DevOps (azure-pipelines.yml) y Jenkins (Jenkinsfile).
+# =============================================================================
 name: ci-cd-comisiones
 
 on:
@@ -8,55 +16,78 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  workflow_dispatch:
 
 permissions:
   id-token: write
   contents: read
+  checks: write
 
 env:
   CSV_FILE: ComisionEmpleados_V1_202610.csv
-  PERIODO: "202610"
-  LOCATION: eastus2
 
 jobs:
   ci:
+    name: CI - validar y probar
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
-      - run: pip install -r requirements-dev.txt
-      - run: ruff check src tests scripts
-      - run: python -m pytest --junitxml=reports/junit.xml
-      - run: python scripts/build_adf_arm.py --check
-      - run: PYTHONPATH=src python -m comisiones.pipeline --modo local --empleados-file tests/fixtures/empleados_fixture.csv --csv data/input/$CSV_FILE --salida output
+        with: { python-version: "3.11", cache: pip }
+      - name: Instalar dependencias
+        run: pip install -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: ruff check src tests scripts
+      - name: Pruebas (pytest)
+        run: python -m pytest --junitxml=reports/junit.xml --cov=src/comisiones --cov-report=term --cov-report=xml:reports/coverage.xml
+      - name: Validar que la plantilla ARM de ADF está sincronizada con adf/
+        run: python scripts/build_adf_arm.py --check
+      - name: Ejecución de prueba del pipeline (fixture)
+        env: { PYTHONPATH: src }
+        run: |
+          python -m comisiones.pipeline --modo local --entorno dev \
+            --empleados-file tests/fixtures/empleados_fixture.csv \
+            --csv data/input/$CSV_FILE --salida output/ci
+      - name: Resumen de pruebas
+        if: always()
+        run: |
+          python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import xml.etree.ElementTree as ET
+          r = ET.parse("reports/junit.xml").getroot()
+          s = r if r.tag == "testsuite" else r.find("testsuite")
+          t, f, e, k = (int(s.get(x, 0)) for x in ("tests", "failures", "errors", "skipped"))
+          print("## Pruebas automatizadas")
+          print("| Total | Aprobadas | Fallidas | Errores | Omitidas |")
+          print("|---|---|---|---|---|")
+          print(f"| {t} | {t - f - e - k} | {f} | {e} | {k} |")
+          EOF
       - uses: actions/upload-artifact@v4
-        with: { name: salida-prueba, path: output }
-
-  deploy:
-    if: github.event_name == 'push'
-    needs: ci
-    runs-on: ubuntu-latest
-    strategy:
-      max-parallel: 1
-      matrix:
-        entorno: [dev, test, prod]
-    environment: ${{ matrix.entorno }}
-    steps:
-      - uses: actions/checkout@v4
-      - if: matrix.entorno == 'prod' && github.ref != 'refs/heads/main'
-        run: echo "prod solo se despliega desde main" && exit 0
-      - uses: azure/login@v2
+        if: always()
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
-      - name: Desplegar con scripts/deploy.sh
-        if: matrix.entorno != 'prod' || github.ref == 'refs/heads/main'
-        env:
-          PG_PASSWORD: ${{ secrets.PG_PASSWORD }}
-          RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP || format('rg-dataops-{0}', matrix.entorno) }}
-          CSV_FILE: ${{ env.CSV_FILE }}
-        run: bash scripts/deploy.sh ${{ matrix.entorno }}
+          name: ci-reportes
+          path: |
+            reports/
+            output/ci/
+
+  cd-dev:
+    name: CD - dev
+    needs: ci
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/deploy.yml
+    with: { entorno: dev }
+    secrets: inherit
+
+  cd-test:
+    name: CD - test
+    needs: cd-dev
+    uses: ./.github/workflows/deploy.yml
+    with: { entorno: test }
+    secrets: inherit
+
+  cd-prod:
+    name: CD - prod
+    needs: cd-test
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/deploy.yml
+    with: { entorno: prod }
+    secrets: inherit
