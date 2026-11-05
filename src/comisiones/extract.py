@@ -35,7 +35,8 @@ FROM {schema}.{table}
 # --------------------------------------------------------------------------- #
 def extraer_empleados_postgres(cfg: PostgresConfig) -> pd.DataFrame:
     """Lee la tabla de empleados desde PostgreSQL (solo lectura)."""
-    from sqlalchemy import create_engine, text  # import diferido: no es necesario en tests
+    # import diferido: SQLAlchemy no es necesario en las pruebas
+    from sqlalchemy import create_engine, text
 
     sql = SQL_EMPLEADO.format(schema=cfg.schema, table=cfg.table)
     log.info("Conectando a PostgreSQL %s:%s/%s (schema=%s)", cfg.host, cfg.port, cfg.database, cfg.schema)
