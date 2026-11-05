@@ -2,7 +2,7 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "description": "Infraestructura DataOps comisiones: ADLS Gen2 (raw/staging/curated), Key Vault y Azure Data Factory con Managed Identity."
+    "description": "Infraestructura DataOps comisiones: ADLS Gen2 (raw/staging/curated), Key Vault y Azure Data Factory. No crea asignaciones de roles: funciona con permiso Contributor (cuentas de laboratorio). ADF lee los secretos de Key Vault mediante access policy de su Managed Identity."
   },
   "parameters": {
     "entorno": {
@@ -41,13 +41,6 @@
         "Standard_GRS"
       ]
     },
-    "deployerObjectId": {
-      "type": "string",
-      "defaultValue": "",
-      "metadata": {
-        "description": "ObjectId del Service Principal de la service connection (para subir el CSV y leer el Parquet en las pruebas)."
-      }
-    },
     "tags": {
       "type": "object",
       "defaultValue": {
@@ -65,8 +58,6 @@
       "staging",
       "curated"
     ],
-    "roleBlobDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
-    "roleKvSecretsUser": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]",
     "tagsEntorno": "[union(parameters('tags'), createObject('entorno', parameters('entorno')))]"
   },
   "resources": [
@@ -115,9 +106,10 @@
           "family": "A",
           "name": "standard"
         },
-        "enableRbacAuthorization": true,
+        "enableRbacAuthorization": false,
         "enableSoftDelete": true,
-        "softDeleteRetentionInDays": 7
+        "softDeleteRetentionInDays": 7,
+        "accessPolicies": []
       }
     },
     {
@@ -150,48 +142,50 @@
       }
     },
     {
-      "type": "Microsoft.Authorization/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), variables('factoryName'), 'blob-contrib')]",
-      "scope": "[concat('Microsoft.Storage/storageAccounts/', variables('storageName'))]",
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
-        "[resourceId('Microsoft.DataFactory/factories', variables('factoryName'))]"
-      ],
-      "properties": {
-        "roleDefinitionId": "[variables('roleBlobDataContributor')]",
-        "principalId": "[reference(resourceId('Microsoft.DataFactory/factories', variables('factoryName')), '2018-06-01', 'Full').identity.principalId]",
-        "principalType": "ServicePrincipal"
-      }
-    },
-    {
-      "type": "Microsoft.Authorization/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), variables('factoryName'), 'kv-secrets-user')]",
-      "scope": "[concat('Microsoft.KeyVault/vaults/', variables('keyVaultName'))]",
+      "type": "Microsoft.KeyVault/vaults/accessPolicies",
+      "apiVersion": "2023-07-01",
+      "name": "[concat(variables('keyVaultName'), '/add')]",
       "dependsOn": [
         "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
         "[resourceId('Microsoft.DataFactory/factories', variables('factoryName'))]"
       ],
       "properties": {
-        "roleDefinitionId": "[variables('roleKvSecretsUser')]",
-        "principalId": "[reference(resourceId('Microsoft.DataFactory/factories', variables('factoryName')), '2018-06-01', 'Full').identity.principalId]",
-        "principalType": "ServicePrincipal"
+        "accessPolicies": [
+          {
+            "tenantId": "[subscription().tenantId]",
+            "objectId": "[reference(resourceId('Microsoft.DataFactory/factories', variables('factoryName')), '2018-06-01', 'Full').identity.principalId]",
+            "permissions": {
+              "secrets": [
+                "get",
+                "list"
+              ]
+            }
+          }
+        ]
       }
     },
     {
-      "condition": "[not(empty(parameters('deployerObjectId')))]",
-      "type": "Microsoft.Authorization/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), parameters('deployerObjectId'), 'deployer-blob')]",
-      "scope": "[concat('Microsoft.Storage/storageAccounts/', variables('storageName'))]",
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[concat(variables('keyVaultName'), '/storage-account-key')]",
       "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
       ],
       "properties": {
-        "roleDefinitionId": "[variables('roleBlobDataContributor')]",
-        "principalId": "[parameters('deployerObjectId')]",
-        "principalType": "ServicePrincipal"
+        "value": "[listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), '2023-01-01').keys[0].value]"
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[concat(variables('keyVaultName'), '/storage-connection-string')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ],
+      "properties": {
+        "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), '2023-01-01').keys[0].value, ';EndpointSuffix=', environment().suffixes.storage)]"
       }
     }
   ],
@@ -219,6 +213,10 @@
     "factoryName": {
       "type": "string",
       "value": "[variables('factoryName')]"
+    },
+    "keyVaultName": {
+      "type": "string",
+      "value": "[variables('keyVaultName')]"
     }
   }
 }

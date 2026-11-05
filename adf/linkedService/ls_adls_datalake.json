@@ -2,10 +2,20 @@
   "name": "ls_adls_datalake",
   "properties": {
     "type": "AzureBlobFS",
-    "description": "Azure Data Lake Storage Gen2 (staging y curated). Autenticación con Managed Identity del Data Factory.",
-    "annotations": ["dataops-comisiones"],
+    "description": "Azure Data Lake Storage Gen2 (staging y curated). Clave de la cuenta guardada en Key Vault.",
+    "annotations": [
+      "dataops-comisiones"
+    ],
     "typeProperties": {
-      "url": "https://stdataopsdev.dfs.core.windows.net/"
+      "url": "https://stdataopsdev.dfs.core.windows.net/",
+      "accountKey": {
+        "type": "AzureKeyVaultSecret",
+        "store": {
+          "referenceName": "ls_keyvault",
+          "type": "LinkedServiceReference"
+        },
+        "secretName": "storage-account-key"
+      }
     }
   }
 }
