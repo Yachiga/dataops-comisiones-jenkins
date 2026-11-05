@@ -54,7 +54,7 @@ class PipelineConfig:
 def _env(nombre: str, defecto: str | None = None, obligatorio: bool = False) -> str | None:
     valor = os.getenv(nombre, defecto)
     if obligatorio and not valor:
-        raise EnvironmentError(f"Falta la variable de entorno obligatoria: {nombre}")
+        raise OSError(f"Falta la variable de entorno obligatoria: {nombre}")
     return valor
 
 
