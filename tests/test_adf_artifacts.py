@@ -84,3 +84,38 @@ def test_cd_cubre_los_tres_entornos():
     for env in ("dev", "test", "prod"):
         assert f"entorno: {env}" in texto
     assert "refs/heads/main" in texto  # prod solo desde main
+
+
+def test_infra_no_requiere_permisos_de_owner():
+    """Cuentas de laboratorio suelen tener solo Contributor: la plantilla no debe crear roleAssignments."""
+    infra = json.loads((RAIZ / "infra/arm/infra.json").read_text(encoding="utf-8"))
+    tipos = [r["type"] for r in infra["resources"]]
+    assert "Microsoft.Authorization/roleAssignments" not in tipos
+    assert "Microsoft.KeyVault/vaults/accessPolicies" in tipos
+    secretos = {r["name"].split("/")[-1].rstrip("')]") for r in infra["resources"] if r["type"].endswith("/secrets")}
+    assert {"pg-dmc-password", "storage-account-key", "storage-connection-string"} <= secretos
+
+
+def test_linked_services_leen_secretos_de_key_vault():
+    for nombre in ("ls_postgres_dmc", "ls_blob_raw", "ls_adls_datalake"):
+        texto = (RAIZ / f"adf/linkedService/{nombre}.json").read_text(encoding="utf-8")
+        assert '"AzureKeyVaultSecret"' in texto, nombre
+
+
+@pytest.mark.parametrize("script", ["scripts/deploy.sh", "scripts/smoke_test_adf.sh", "scripts/publicar_github.sh"])
+def test_scripts_bash_sintaxis(script):
+    r = subprocess.run(["bash", "-n", str(RAIZ / script)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+def test_jenkinsfile_cubre_ci_y_tres_entornos_con_aprobacion():
+    j = (RAIZ / "Jenkinsfile").read_text(encoding="utf-8")
+    for etapa in ("CI - Pruebas", "CD - dev", "CD - test", "CD - prod", "Aprobación producción"):
+        assert f"stage('{etapa}')" in j
+    assert "input message" in j and "junit" in j
+    assert j.count("{") == j.count("}")
+
+
+def test_ci_cd_reutilizan_deploy_sh():
+    for ruta in ("cicd/templates/deploy-env.yml", "Jenkinsfile", ".github/workflows/ci-cd.yml"):
+        assert "deploy.sh" in (RAIZ / ruta).read_text(encoding="utf-8"), ruta
