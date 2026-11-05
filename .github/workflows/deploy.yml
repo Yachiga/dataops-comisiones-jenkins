@@ -1,0 +1,68 @@
+# Despliegue reutilizable de un entorno (dev | test | prod).
+# Las aprobaciones se configuran en Settings > Environments > <entorno>.
+name: deploy-entorno
+
+on:
+  workflow_call:
+    inputs:
+      entorno:
+        type: string
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Desplegar ${{ inputs.entorno }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.entorno }}
+    env:
+      CSV_FILE: ComisionEmpleados_V1_202610.csv
+      DESTINO: ${{ vars.DESTINO || 'local' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      # ---------------- DESTINO=local: PostgreSQL real -> Parquet -----------------
+      - name: Pipeline Python contra PostgreSQL (dmc.rrhh.empleado)
+        if: env.DESTINO == 'local'
+        env:
+          PYTHONPATH: src
+          PG_HOST: mgg.vps.webdock.cloud
+          PG_DATABASE: dmc
+          PG_USER: usr_ro_dmc_rrhh_estudiantes
+          PG_PASSWORD: ${{ secrets.PG_PASSWORD }}
+        run: |
+          if [ -z "$PG_PASSWORD" ]; then echo "::error::Falta el secret PG_PASSWORD"; exit 1; fi
+          python -m comisiones.pipeline --modo local --entorno ${{ inputs.entorno }} \
+            --csv data/input/$CSV_FILE --salida datalake/${{ inputs.entorno }} \
+            --formatos parquet xlsx csv
+      - name: Validar Parquet generado
+        if: env.DESTINO == 'local'
+        run: |
+          python scripts/verify_parquet.py --ruta datalake/${{ inputs.entorno }} \
+            --csv data/input/$CSV_FILE --resumen "$GITHUB_STEP_SUMMARY" --entorno ${{ inputs.entorno }}
+      - uses: actions/upload-artifact@v4
+        if: env.DESTINO == 'local'
+        with:
+          name: datalake-${{ inputs.entorno }}
+          path: datalake/${{ inputs.entorno }}/
+
+      # ---------------- DESTINO=azure: ARM + Data Factory -------------------------
+      - uses: azure/login@v2
+        if: env.DESTINO == 'azure'
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: scripts/deploy.sh ${{ inputs.entorno }}
+        if: env.DESTINO == 'azure'
+        env:
+          PG_PASSWORD: ${{ secrets.PG_PASSWORD }}
+          RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP || format('rg-dataops-{0}', inputs.entorno) }}
+        run: bash scripts/deploy.sh ${{ inputs.entorno }}

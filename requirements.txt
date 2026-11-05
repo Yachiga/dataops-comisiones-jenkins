@@ -6,3 +6,4 @@ azure-identity>=1.16
 azure-storage-blob>=12.19
 azure-storage-file-datalake>=12.14
 openpyxl>=3.1
+tabulate>=0.9
