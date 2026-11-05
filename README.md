@@ -171,7 +171,19 @@ bash scripts/deploy.sh dev
 | **CD_TEST** | tras CD_DEV | `scripts/deploy.sh test` (trigger queda detenido) |
 | **CD_PROD** | solo rama `main`, tras CD_TEST y los checks del environment | `scripts/deploy.sh prod` |
 
-### 4. Opción B – Jenkins
+### 4. Opción C – GitHub Actions (activa en el repositorio)
+
+`.github/workflows/ci-cd.yml` ejecuta CI en cada push y PR, y CD dev → test → prod (prod solo
+desde `main`, con aprobación del environment `prod`). El despliegue está en
+`.github/workflows/deploy.yml`:
+
+* Variable de repositorio `DESTINO=local` (por defecto): ejecuta el pipeline Python contra la base
+  PostgreSQL real y publica el Parquet como artefacto `datalake-<entorno>`.
+* `DESTINO=azure`: ejecuta `scripts/deploy.sh` (requiere los secrets `AZURE_CLIENT_ID`,
+  `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`).
+* Secret obligatorio: `PG_PASSWORD` (*Settings → Secrets and variables → Actions*).
+
+### 5. Opción B – Jenkins
 
 1. Jenkins con los plugins *Pipeline*, *Git*, *GitHub Branch Source*, *Credentials Binding* y *JUnit*;
    el agente necesita `python3`, `git` y Azure CLI.
