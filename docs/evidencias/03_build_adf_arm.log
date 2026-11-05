@@ -1,1 +1,7 @@
 OK: plantilla ARM de ADF al día
+Sintaxis bash OK: scripts/deploy.sh
+Sintaxis bash OK: scripts/smoke_test_adf.sh
+Sintaxis bash OK: scripts/publicar_github.sh
+YAML válido: azure-pipelines.yml
+YAML válido: cicd/templates/deploy-env.yml
+YAML válido: .github/workflows/ci-cd.yml
