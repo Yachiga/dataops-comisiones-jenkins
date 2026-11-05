@@ -1,4 +1,7 @@
-# DataOps · Cálculo de salario total con comisiones
+# DataOps · Cálculo de salario total con comisiones (versión Jenkins)
+
+> Esta versión ejecuta el CI/CD en **Jenkins** (`Jenkinsfile`). GitHub Actions está desactivado en este repositorio.
+> Versión con GitHub Actions: https://github.com/Yachiga/dataops-comisiones
 
 Flujo automatizado que combina la tabla **`dmc.rrhh.empleado`** (PostgreSQL) con el archivo
 **`ComisionEmpleados_V1_AAAAMM.csv`** (Azure Blob Storage), hace un **Join por `empleado_id`**,
@@ -9,7 +12,7 @@ salario_total = mnt_salario + mnt_comision
 ```
 
 y escribe el consolidado en **Parquet** en el Data Lake (ADLS Gen2). El despliegue a
-**dev → test → prod** está automatizado con **Azure DevOps** (CI/CD) y plantillas **ARM**.
+**dev → test → prod** está automatizado con **Jenkins** (CI/CD) y plantillas **ARM**.
 
 El flujo se entrega en dos implementaciones equivalentes:
 
@@ -74,8 +77,8 @@ supera_tope_comision, periodo, entorno, fecha_proceso`
 │   └── verify_parquet.py     # valida el Parquet escrito en curated
 ├── azure-pipelines.yml       # CI + CD dev/test/prod (Azure DevOps)
 ├── cicd/templates/deploy-env.yml
-├── Jenkinsfile               # CI + CD dev/test/prod (Jenkins)
-├── .github/workflows/ci-cd.yml  # alternativa GitHub Actions (opcional)
+├── Jenkinsfile               # CI + CD dev/test/prod (Jenkins) – herramienta activa
+├── .github/workflows/        # alternativa GitHub Actions (desactivada en este repositorio)
 ├── data/input/ComisionEmpleados_V1_202610.csv
 └── sql/extract_empleado.sql
 ```
@@ -108,14 +111,14 @@ Códigos de salida: `0` éxito, `2` validación de calidad fallida, `1` error in
 
 ## Publicar el repositorio en GitHub
 
-1. Crear el repositorio **vacío** `dataops-comisiones` en https://github.com/new con la cuenta `yachiga`
+1. Crear el repositorio **vacío** `dataops-comisiones-jenkins` en https://github.com/new con la cuenta `Yachiga`
    (sin README ni .gitignore).
 2. Crear un *Personal Access Token* (Settings → Developer settings → Tokens, permiso `repo`): GitHub
    lo pide como contraseña al hacer `git push`.
 3. Desde la carpeta del proyecto:
 
 ```bash
-bash scripts/publicar_github.sh yachiga dataops-comisiones   # sube main, develop y las etiquetas
+bash scripts/publicar_github.sh Yachiga dataops-comisiones-jenkins   # sube main, develop y las etiquetas
 ```
 
 ---
@@ -171,7 +174,7 @@ bash scripts/deploy.sh dev
 | **CD_TEST** | tras CD_DEV | `scripts/deploy.sh test` (trigger queda detenido) |
 | **CD_PROD** | solo rama `main`, tras CD_TEST y los checks del environment | `scripts/deploy.sh prod` |
 
-### 4. Opción C – GitHub Actions (activa en el repositorio)
+### 4. Opción C – GitHub Actions (desactivada en este repositorio)
 
 `.github/workflows/ci-cd.yml` ejecuta CI en cada push y PR, y CD dev → test → prod (prod solo
 desde `main`, con aprobación del environment `prod`). El despliegue está en
@@ -183,19 +186,33 @@ desde `main`, con aprobación del environment `prod`). El despliegue está en
   `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`).
 * Secret obligatorio: `PG_PASSWORD` (*Settings → Secrets and variables → Actions*).
 
-### 5. Opción B – Jenkins
+### 5. Opción B – Jenkins (activa en este repositorio)
 
-1. Jenkins con los plugins *Pipeline*, *Git*, *GitHub Branch Source*, *Credentials Binding* y *JUnit*;
-   el agente necesita `python3`, `git` y Azure CLI.
-2. Credenciales (*Manage Jenkins → Credentials*): `pg-password` (Secret text) y, para desplegar en
-   Azure, `azure-sp` (Username with password: appId / secret) y `azure-tenant-id` (Secret text).
-3. *New Item → Multibranch Pipeline* → fuente GitHub `https://github.com/yachiga/dataops-comisiones.git`
-   → *Script Path* `Jenkinsfile`.
-4. Parámetro **DESTINO**: `azure` (despliega con `deploy.sh`) o `local` (ejecuta el pipeline Python
-   contra PostgreSQL y deja el Parquet en `datalake/<entorno>/`, sin Azure).
+**Levantar Jenkins con Docker** (PowerShell):
 
-Etapas: Preparar entorno → CI Lint → CI Pruebas (JUnit) → CI Validar ADF/ARM → CI Ejecución de
-prueba → CD dev → CD test → **Aprobación producción** (`input`, solo `main`) → CD prod.
+```powershell
+docker run -d --name jenkins-dataops -p 8090:8080 -u root -v jenkins_dataops:/var/jenkins_home jenkins/jenkins:lts-jdk17
+docker exec jenkins-dataops bash -c "apt-get update && apt-get install -y python3 python3-venv python3-pip"
+docker exec jenkins-dataops cat /var/jenkins_home/secrets/initialAdminPassword
+```
+
+Abrir http://localhost:8090, pegar la clave inicial, instalar los *suggested plugins* y crear el usuario administrador.
+
+**Configuración:**
+
+1. Credencial (*Manage Jenkins → Credentials → System → Global → Add Credentials*): tipo **Secret text**,
+   ID **`PG_PASSWORD`**, valor = contraseña del usuario de solo lectura `usr_ro_dmc_rrhh_estudiantes`.
+   Para `DESTINO=azure` además: `azure-sp` (Username with password: appId / secret) y `azure-tenant-id` (Secret text).
+2. *New Item → Multibranch Pipeline* → *Branch Sources: Git* →
+   `https://github.com/Yachiga/dataops-comisiones-jenkins.git` → *Script Path* `Jenkinsfile` →
+   *Scan Multibranch Pipeline Triggers*: periódicamente cada 1 minuto.
+3. Parámetro **DESTINO**: `local` (por defecto) ejecuta el pipeline Python contra PostgreSQL y deja
+   `salario_total_202610.parquet` (+ Excel y CSV) validado en `datalake/<entorno>/` como artefacto;
+   `azure` despliega ARM + Data Factory con `scripts/deploy.sh`.
+
+**Etapas:** Preparar entorno Python → CI Lint → CI Pruebas (JUnit, 58 pruebas) → CI Validar ADF/ARM →
+CI Ejecución de prueba → CD dev → CD test → **Aprobación producción** (`input`, solo `main`) → CD prod.
+`develop` despliega a dev y test; `main` además pide aprobación y despliega a prod.
 
 ### 4. Flujo de trabajo Git
 
@@ -209,7 +226,7 @@ prueba → CD dev → CD test → **Aprobación producción** (`input`, solo `ma
 
 ## Seguridad
 
-* Ninguna contraseña se versiona: `PG_PASSWORD` vive en el variable group (secreto) y en Key Vault.
+* Ninguna contraseña se versiona: `PG_PASSWORD` vive en el almacén de credenciales de Jenkins (y en Key Vault en el despliegue a Azure); Jenkins la enmascara en los logs.
 * ADF lee de Key Vault la contraseña de PostgreSQL y la clave del Storage (access policy de su
   Managed Identity). Con permisos de Owner se puede pasar a roles RBAC y prescindir de la clave.
 * Una prueba (`test_no_hay_secretos_en_el_repositorio`) falla si aparece un secreto en el código.
