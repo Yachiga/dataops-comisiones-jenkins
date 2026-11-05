@@ -35,7 +35,7 @@ PARAMETROS = {
     "factoryName": {"type": "string", "metadata": {"description": "Nombre del Data Factory destino"}},
     "entorno": {"type": "string", "allowedValues": ["dev", "test", "prod"]},
     "keyVaultUri": {"type": "string"},
-    "blobEndpoint": {"type": "string"},
+    "blobEndpoint": {"type": "string", "defaultValue": "", "metadata": {"description": "No se usa desde v1.1 (el Blob usa cadena de conexión en Key Vault); se conserva por compatibilidad"}},
     "dfsEndpoint": {"type": "string"},
     "storageAccountId": {"type": "string"},
     "pgServer": {"type": "string", "defaultValue": "mgg.vps.webdock.cloud"},
@@ -46,7 +46,6 @@ PARAMETROS = {
 # (carpeta, nombre, ruta dentro de properties) -> expresión ARM
 OVERRIDES = {
     ("linkedService", "ls_keyvault", ("typeProperties", "baseUrl")): "[parameters('keyVaultUri')]",
-    ("linkedService", "ls_blob_raw", ("typeProperties", "serviceEndpoint")): "[parameters('blobEndpoint')]",
     ("linkedService", "ls_adls_datalake", ("typeProperties", "url")): "[parameters('dfsEndpoint')]",
     ("linkedService", "ls_postgres_dmc", ("typeProperties", "server")): "[parameters('pgServer')]",
     ("linkedService", "ls_postgres_dmc", ("typeProperties", "database")): "[parameters('pgDatabase')]",
